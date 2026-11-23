@@ -43,7 +43,8 @@ td,th{padding:4px 6px;text-align:right;border-bottom:1px solid #8883;white-space
 Le carnet agrège Binance, Kraken, Coinbase et Bitfinex : chaque niveau est placé selon son écart au mid de son carnet, appliqué au prix spot.
 Déséquilibre = (acheteurs − vendeurs) / total à ±3 $ ; mur = plus gros niveau à ±5 $ s'il dépasse 3× la moyenne.</p>
 <h2>Stratégies</h2><div class="grid" id="st"></div>
-<p><button id="replay">Rejouer tout l'historique avec ces paramètres</button> <span class="mut" id="rm"></span></p>
+<p><button id="replay">Rejouer tout l'historique avec ces paramètres</button> <button id="opt">Optimiser les paramètres</button> <span class="mut" id="rm"></span></p>
+<div class="wrap" id="optres"></div>
 <div class="wrap"><table id="res"></table></div>
 <h2>Derniers trades live</h2><div class="wrap"><table id="tr"></table></div>
 <h2>Base SQLite <span class="mut" id="dbm"></span></h2>
@@ -110,9 +111,10 @@ const ins = (mode, f = (q, p) => db.run(q, p)) => t => f('INSERT OR IGNORE INTO 
 let stored = {}; try { stored = JSON.parse(localStorage.getItem('xau-params')) || {}; } catch (e) {}
 const params = Object.fromEntries(Object.entries(STRATS).map(([k, s]) => [k, { on: true, ...s.p, ...stored[k] }]));
 const saveParams = () => { try { localStorage.setItem('xau-params', JSON.stringify(params)); } catch (e) {} };
-$('st').innerHTML = Object.entries(STRATS).map(([k, s]) => `<div class="c"><label><b>${s.nom}</b><input type="checkbox" data-k="${k}" data-p="on" ${params[k].on ? 'checked' : ''}></label>
+const cards = () => $('st').innerHTML = Object.entries(STRATS).map(([k, s]) => `<div class="c"><label><b>${s.nom}</b><input type="checkbox" data-k="${k}" data-p="on" ${params[k].on ? 'checked' : ''}></label>
   ${Object.keys(s.p).map(p => `<label>${LBL[p] || p}<input type="number" step="any" data-k="${k}" data-p="${p}" value="${params[k][p]}"></label>`).join('')}
   <div class="st" id="st-${k}"></div></div>`).join('');
+cards();
 $('st').oninput = e => { const { k, p } = e.target.dataset; if (!k) return;
   params[k][p] = p === 'on' ? e.target.checked : +e.target.value; saveParams(); };
 
@@ -229,6 +231,33 @@ $('replay').onclick = () => {
   for (const r of all) R.tick(r[0], r[1], r[2], true, ob(r));
   $('rm').textContent = `${all.length} ticks rejoués en ${Math.round(performance.now() - t)} ms (positions encore ouvertes ignorées)`;
   save(); render();
+};
+
+// --- Optimisation (grille, réglage sur 60 % / contrôle sur 40 % des ticks) ; « Appliquer » reprend le réglage proposé
+let opt = {};
+$('opt').onclick = async () => {
+  const T = rows(TQ + ' ORDER BY ts'), cache = new Map(), t0 = performance.now();
+  if (T.length < 1200) return $('optres').innerHTML = `<p class="mut">Pas assez de ticks (${T.length}) : il faut au moins ~20 min d'enregistrement.</p>`;
+  for (const k in STRATS) {
+    $('optres').innerHTML = `<p class="mut">Optimisation : ${STRATS[k].nom}…</p>`;
+    await new Promise(r => setTimeout(r));
+    opt[k] = optimise(T, k, params[k], cache);
+  }
+  const f = s => `${s.n} trades · ${s.win} gagnants · <span class="${cls(s.pnl)}">${sign(s.pnl)} $</span>`;
+  $('optres').innerHTML = `<p class="mut">${T.length} ticks (${Math.round((T.at(-1)[0] - T[0][0]) / 60000)} min) · ${Math.round(performance.now() - t0)} ms.
+    Réglage = trades entrés sur les 60 % premiers ticks, contrôle = les 40 % suivants (jamais vus).
+    Proposé seulement si gagnant sur les deux (≥ 3 trades chacun). Avec peu de trades, le résultat reste fragile.</p>
+    <table><tr><th>Stratégie</th><th>Actuel · réglage</th><th>Actuel · contrôle</th><th>Proposé</th><th>Réglage</th><th>Contrôle</th><th></th></tr>
+    ${Object.entries(opt).map(([k, r]) => `<tr><td>${STRATS[k].nom}</td><td>${f(r.actuel.train)}</td><td>${f(r.actuel.test)}</td>${r.best
+      ? `<td>${Object.entries(r.best.p).map(([n, v]) => `${LBL[n] || n} ${v}`).join(' · ')}</td><td>${f(r.best.train)}</td><td>${f(r.best.test)}</td>
+         <td><button data-apply="${k}">Appliquer</button></td>`
+      : `<td colspan="4" class="mut">aucun réglage gagnant sur les deux périodes (${r.essais} essais)</td>`}</tr>`).join('')}</table>`;
+};
+$('optres').onclick = e => {
+  const k = e.target.dataset.apply;
+  if (!k) return;
+  Object.assign(params[k], opt[k].best.p); saveParams(); cards();
+  e.target.textContent = 'Appliqué ✓'; e.target.disabled = true;
 };
 
 // --- Console SQL

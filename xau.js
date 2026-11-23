@@ -29,7 +29,7 @@ const mono = (a, dir, n) => a.length === n && a.every((x, i) => i === 0 || (x - 
 const BASE = { sl: 2, tp: 4, maxMin: 10, maxSpread: 0.8, pause: 30 };
 const STRATS = {
   rebond: {
-    nom: 'Rebond sur zone', p: { ...BASE, dist: 1, ticks: 3 }, signal(c, p) {
+    nom: 'Rebond sur zone', p: { ...BASE, dist: 1, ticks: 3 }, g: { dist: [0.3, 0.5, 1], ticks: [2, 3, 5] }, signal(c, p) {
       const m = mids(c.h, p.ticks + 1);
       for (const z of c.zones) {
         if (z.side === 'buy' && c.mid >= z.lo && c.mid - z.hi <= p.dist && mono(m, 1, p.ticks + 1)) return 'buy';
@@ -38,7 +38,7 @@ const STRATS = {
     }
   },
   cassure: {
-    nom: 'Cassure de zone', p: { ...BASE, marge: 0.5 }, signal(c, p) {
+    nom: 'Cassure de zone', p: { ...BASE, marge: 0.5 }, g: { marge: [0.2, 0.5, 1] }, signal(c, p) {
       for (const z of c.zones) {
         if (c.prev <= z.hi + p.marge && c.mid > z.hi + p.marge) return 'buy';
         if (c.prev >= z.lo - p.marge && c.mid < z.lo - p.marge) return 'sell';
@@ -46,13 +46,13 @@ const STRATS = {
     }
   },
   momentum: {
-    nom: 'Momentum ticks', p: { ...BASE, sl: 1.5, tp: 3, ticks: 5, move: 1 }, signal(c, p) {
+    nom: 'Momentum ticks', p: { ...BASE, sl: 1.5, tp: 3, ticks: 5, move: 1 }, g: { ticks: [3, 5, 8], move: [0.5, 1, 1.5] }, signal(c, p) {
       const m = mids(c.h, p.ticks + 1), d = m[m.length - 1] - m[0];
       if (Math.abs(d) >= p.move && mono(m, Math.sign(d), p.ticks + 1)) return d > 0 ? 'buy' : 'sell';
     }
   },
   desequilibre: {
-    nom: 'Déséquilibre carnet', p: { ...BASE, sl: 1.5, tp: 2, seuil: 0.2, ticks: 3 }, signal(c, p) {
+    nom: 'Déséquilibre carnet', p: { ...BASE, sl: 1.5, tp: 2, seuil: 0.2, ticks: 3 }, g: { seuil: [0.1, 0.15, 0.2, 0.3], ticks: [2, 3, 5] }, signal(c, p) {
       const im = c.h.slice(-p.ticks).map(x => x[2]);
       if (im.length < p.ticks) return;
       if (im.every(x => x >= p.seuil)) return 'buy';
@@ -60,13 +60,13 @@ const STRATS = {
     }
   },
   mur: {
-    nom: 'Rebond sur mur', p: { ...BASE, sl: 1.5, tp: 2, dist: 0.5 }, signal(c, p) {
+    nom: 'Rebond sur mur', p: { ...BASE, sl: 1.5, tp: 2, dist: 0.5 }, g: { dist: [0.2, 0.5, 1] }, signal(c, p) {
       if (c.wallBid && c.mid - c.wallBid <= p.dist && c.mid > c.prev) return 'buy';
       if (c.wallAsk && c.wallAsk - c.mid <= p.dist && c.mid < c.prev) return 'sell';
     }
   },
   moyenne: {
-    nom: 'Retour à la moyenne', p: { ...BASE, sl: 3, tp: 2, win: 120, k: 2.5 }, signal(c, p) {
+    nom: 'Retour à la moyenne', p: { ...BASE, sl: 3, tp: 2, win: 120, k: 2.5 }, g: { win: [60, 120, 300], k: [1.5, 2, 2.5, 3] }, signal(c, p) {
       const m = mids(c.h, p.win);
       if (m.length < p.win) return;
       const mu = m.reduce((a, x) => a + x, 0) / m.length, sd = Math.sqrt(m.reduce((a, x) => a + (x - mu) ** 2, 0) / m.length);
@@ -79,14 +79,15 @@ const STRATS = {
 // Moteur : 1 position de 1 oz max par stratégie. Achat au ask, sortie au bid (le spread est payé).
 // params[k] = { on, ...STRATS[k].p } ; onTrade(trade fermé). tick(..., false) = historique sans trader.
 // ob = carnet au moment du tick : { imb (-1..1), wallBid, wallAsk (prix) }. S.h = [[ts, mid, imb], ...]
-function engine(params, onTrade) {
+// cache (Map, optionnel) : zones partagées entre plusieurs passes sur les mêmes ticks (elles ne dépendent que du prix).
+function engine(params, onTrade, cache) {
   const S = { h: [], zones: [], zt: 0, pos: {}, last: {} };
   return {
     S, tick(ts, bid, ask, trade = true, ob = {}) {
       const mid = (bid + ask) / 2, prev = S.h.length ? S.h[S.h.length - 1][1] : mid;
       S.h.push([ts, mid, ob.imb]);
       if (S.h.length > 18000) S.h.splice(0, S.h.length - 14400); // ~4 h à 1 tick/s
-      if (ts - S.zt >= 60000) { S.zones = zones(S.h, mid); S.zt = ts; }
+      if (ts - S.zt >= 60000) { S.zones = cache?.get(ts) ?? zones(S.h, mid); cache?.set(ts, S.zones); S.zt = ts; }
       for (const z of S.zones) z.side = (z.lo + z.hi) / 2 < mid ? 'buy' : 'sell';
       if (!trade) return;
       for (const k in STRATS) {
@@ -102,6 +103,29 @@ function engine(params, onTrade) {
       }
     }
   };
+}
+
+// Backtest d'une stratégie seule sur des ticks [[ts, bid, ask, imb, wall_bid, wall_ask], ...] → trades fermés.
+function backtest(T, k, p, cache) {
+  const params = Object.fromEntries(Object.keys(STRATS).map(s => [s, { ...STRATS[s].p, on: false }]));
+  params[k] = { ...params[k], ...p, on: true };
+  const tr = [], E = engine(params, t => tr.push(t), cache);
+  for (const r of T) E.tick(r[0], r[1], r[2], true, { imb: r[3], wallBid: r[4], wallAsk: r[5] });
+  return tr;
+}
+const stats = tr => ({ n: tr.length, pnl: tr.reduce((a, t) => a + t.pnl, 0), win: tr.filter(t => t.pnl > 0).length });
+
+// Optimisation : toute la grille (stop × objectif × réglages propres) ; trades entrés avant 60 % des ticks = « réglage »,
+// après = « contrôle » (période jamais vue). Retenu seulement si gagnant sur les deux (≥ minN trades chacun),
+// en maximisant la plus faible des deux moitiés.
+const SLTP = { sl: [1, 1.5, 2, 3], tp: [1, 2, 3, 4] };
+function optimise(T, k, current, cache, minN = 3) {
+  const cut = T[Math.floor(T.length * 0.6)][0];
+  const grid = Object.entries({ ...SLTP, ...STRATS[k].g }).reduce((acc, [n, vs]) => acc.flatMap(o => vs.map(v => ({ ...o, [n]: v }))), [{}]);
+  const bt = p => { const tr = backtest(T, k, p, cache); return { p, train: stats(tr.filter(t => t.entry_ts < cut)), test: stats(tr.filter(t => t.entry_ts >= cut)) }; };
+  const ok = grid.map(bt).filter(r => r.train.n >= minN && r.test.n >= minN && r.train.pnl > 0 && r.test.pnl > 0)
+    .sort((a, b) => Math.min(b.train.pnl, b.test.pnl) - Math.min(a.train.pnl, a.test.pnl));
+  return { actuel: bt(current), best: ok[0] || null, essais: grid.length };
 }
 
 // Graphique canvas : prix, zones, chiffres ronds, marques de trades { ts, price, side, exit, win }.
@@ -194,4 +218,4 @@ function zoomable(cv, seg, get, set) {
   mark();
 }
 
-if (typeof module !== 'undefined') module.exports = { zones, engine, STRATS };
+if (typeof module !== 'undefined') module.exports = { zones, engine, STRATS, backtest, optimise };

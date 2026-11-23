@@ -1,5 +1,5 @@
 // node test.js
-const assert = require('assert'), { zones, engine, STRATS } = require('./xau.js');
+const assert = require('assert'), { zones, engine, STRATS, backtest, optimise } = require('./xau.js');
 
 // V sur 20 min : creux à 3690 à la 10e minute → une seule zone, d'achat, autour de 3690
 const v = [];
@@ -30,4 +30,14 @@ const E2 = engine(p2, () => {});
 assert(!E2.S.pos.desequilibre);
 E2.tick(5000, 3699.9, 3700.1, true, { imb: 0.45 });
 assert.strictEqual(E2.S.pos.desequilibre.side, 'buy');
+
+// Optimiseur : 1 h de sinusoïde. Le cache de zones ne change pas les résultats ; un réglage proposé gagne sur les deux moitiés.
+const S = [];
+for (let i = 0; i < 3600; i++) { const m = 3700 + 3 * Math.sin(i / 90); S.push([i * 1000, m - .1, m + .1, null, null, null]); }
+assert.deepStrictEqual(backtest(S, 'rebond', {}, new Map()), backtest(S, 'rebond', {}));
+for (const k in STRATS) {
+  const o = optimise(S, k, STRATS[k].p, new Map());
+  assert(o.essais >= 48 && o.actuel.train.n >= 0);
+  if (o.best) assert(o.best.train.pnl > 0 && o.best.test.pnl > 0 && o.best.train.n >= 3 && o.best.test.n >= 3);
+}
 console.log('ok', trades.length, 'trades');
