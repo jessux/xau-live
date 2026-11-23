@@ -51,6 +51,20 @@ const STRATS = {
       if (Math.abs(d) >= p.move && mono(m, Math.sign(d), p.ticks + 1)) return d > 0 ? 'buy' : 'sell';
     }
   },
+  desequilibre: {
+    nom: 'Déséquilibre carnet', p: { ...BASE, sl: 1.5, tp: 2, seuil: 0.4, ticks: 3 }, signal(c, p) {
+      const im = c.h.slice(-p.ticks).map(x => x[2]);
+      if (im.length < p.ticks) return;
+      if (im.every(x => x >= p.seuil)) return 'buy';
+      if (im.every(x => x <= -p.seuil)) return 'sell';
+    }
+  },
+  mur: {
+    nom: 'Rebond sur mur', p: { ...BASE, sl: 1.5, tp: 2, dist: 0.5 }, signal(c, p) {
+      if (c.wallBid && c.mid - c.wallBid <= p.dist && c.mid > c.prev) return 'buy';
+      if (c.wallAsk && c.wallAsk - c.mid <= p.dist && c.mid < c.prev) return 'sell';
+    }
+  },
   moyenne: {
     nom: 'Retour à la moyenne', p: { ...BASE, sl: 3, tp: 2, win: 120, k: 2.5 }, signal(c, p) {
       const m = mids(c.h, p.win);
@@ -64,12 +78,13 @@ const STRATS = {
 
 // Moteur : 1 position de 1 oz max par stratégie. Achat au ask, sortie au bid (le spread est payé).
 // params[k] = { on, ...STRATS[k].p } ; onTrade(trade fermé). tick(..., false) = historique sans trader.
+// ob = carnet au moment du tick : { imb (-1..1), wallBid, wallAsk (prix) }. S.h = [[ts, mid, imb], ...]
 function engine(params, onTrade) {
   const S = { h: [], zones: [], zt: 0, pos: {}, last: {} };
   return {
-    S, tick(ts, bid, ask, trade = true) {
+    S, tick(ts, bid, ask, trade = true, ob = {}) {
       const mid = (bid + ask) / 2, prev = S.h.length ? S.h[S.h.length - 1][1] : mid;
-      S.h.push([ts, mid]);
+      S.h.push([ts, mid, ob.imb]);
       if (S.h.length > 18000) S.h.splice(0, S.h.length - 14400); // ~4 h à 1 tick/s
       if (ts - S.zt >= 60000) { S.zones = zones(S.h, mid); S.zt = ts; }
       for (const z of S.zones) z.side = (z.lo + z.hi) / 2 < mid ? 'buy' : 'sell';
@@ -81,7 +96,7 @@ function engine(params, onTrade) {
           const reason = pnl <= -p.sl ? 'stop' : pnl >= p.tp ? 'objectif' : ts - pos.entry_ts >= p.maxMin * 60000 ? 'temps' : null;
           if (reason) { delete S.pos[k]; S.last[k] = ts; onTrade({ ...pos, exit_ts: ts, exit, pnl, reason }); }
         } else if (p.on && ask - bid <= p.maxSpread && ts - (S.last[k] || 0) >= p.pause * 1000) {
-          const side = STRATS[k].signal({ h: S.h, zones: S.zones, mid, prev }, p);
+          const side = STRATS[k].signal({ h: S.h, zones: S.zones, mid, prev, wallBid: ob.wallBid, wallAsk: ob.wallAsk }, p);
           if (side) S.pos[k] = { strategy: k, side, entry_ts: ts, entry: side === 'buy' ? ask : bid };
         }
       }
@@ -143,7 +158,7 @@ function drawChart(cv, pts, zs, span, marks = [], hx = null) {
   let a = 0, b = pts.length - 1;
   while (a < b) { const m = (a + b) >> 1; if (pts[m][0] < t) a = m + 1; else b = m; }
   if (a > 0 && t - pts[a - 1][0] < pts[a][0] - t) a--;
-  const hit = { ts: pts[a][0], price: pts[a][1], tol: span / (W - R) * 4 }, x = X(hit.ts);
+  const hit = { ts: pts[a][0], price: pts[a][1], imb: pts[a][2], tol: span / (W - R) * 4 }, x = X(hit.ts);
   g.strokeStyle = mut; g.lineWidth = 1; g.setLineDash([2, 2]);
   g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H - B); g.stroke(); g.setLineDash([]);
   g.fillStyle = fg; g.beginPath(); g.arc(x, Y(hit.price), 3, 0, 7); g.fill();

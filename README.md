@@ -3,7 +3,7 @@
 Prix de l'or en direct (Swissquote, 1 s, secours gold-api.com), uniquement des données live.
 
 - **`/`** : graphique + zones d'achat / de vente calculées sur le prix (plus hauts / plus bas locaux regroupés).
-- **`/scalp.html`** : paper trading live de 4 stratégies de scalping, ticks et trades enregistrés dans une base SQLite
+- **`/scalp.html`** : carnet d'ordres live (or tokenisé PAXG/XAUT agrégé, recalé sur le spot) + paper trading live de 6 stratégies de scalping, ticks et trades enregistrés dans une base SQLite
   (sql.js, dans le navigateur, sauvegardée dans IndexedDB), rejeu de l'historique avec d'autres paramètres, console SQL, export `.sqlite`.
 
 ## Tester en local
@@ -44,6 +44,7 @@ index.html         zones d'achat / de vente
 scalp.html         paper trading + SQLite
 xau.js             zones, stratégies, moteur, graphique (partagé)
 api/price.js       prix Swissquote (+ secours gold-api.com)
+api/book.js        carnet d'ordres live or tokenisé (Binance, Kraken, Coinbase, Bitfinex)
 dev.js             serveur local
 test.js            node test.js : vérifie zones + moteur
 ```
