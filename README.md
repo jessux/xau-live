@@ -1,12 +1,10 @@
 # XAUUSD Live
 
-Prix de l'or en direct + positions des traders (long / short).
+Prix de l'or en direct (Swissquote, 1 s, secours gold-api.com), uniquement des données live.
 
-| Donnée | Source | Fréquence |
-|---|---|---|
-| Prix bid / ask | Swissquote | 1 s |
-| Positions + niveaux | FastBull | 30 min |
-| Positions + prix moyens | Myfxbook (optionnel) | quelques min |
+- **`/`** : graphique + zones d'achat / de vente calculées sur le prix (plus hauts / plus bas locaux regroupés).
+- **`/scalp.html`** : paper trading live de 4 stratégies de scalping, ticks et trades enregistrés dans une base SQLite
+  (sql.js, dans le navigateur, sauvegardée dans IndexedDB), rejeu de l'historique avec d'autres paramètres, console SQL, export `.sqlite`.
 
 ## Tester en local
 
@@ -20,24 +18,11 @@ node dev.js
 
 Ouvrir http://localhost:3000
 
-### Activer Myfxbook (optionnel)
-
-Compte gratuit sur myfxbook.com, puis :
-
-```bash
-MYFXBOOK_EMAIL="ton@email" MYFXBOOK_PASSWORD="motdepasse" node dev.js
-```
-
-Windows (PowerShell) :
-
-```powershell
-$env:MYFXBOOK_EMAIL="ton@email"; $env:MYFXBOOK_PASSWORD="motdepasse"; node dev.js
-```
-
 ### Derrière un proxy d'entreprise (PowerShell)
 
+`dev.js` fait passer les requêtes par `HTTPS_PROXY` (sans dépendance) :
+
 ```powershell
-npm i undici
 $env:HTTPS_PROXY="http://proxy.entreprise:8080"; node dev.js
 ```
 
@@ -47,18 +32,18 @@ Si le proxy demande un identifiant : `http://user:motdepasse@proxy:8080`.
 ### Vérifier les API
 
 - http://localhost:3000/api/price
-- http://localhost:3000/api/positions
 
 ## Déployer sur Vercel
 
 vercel.com → New Project → importer `jessux/xau-live` → Deploy.
-Pour Myfxbook : Settings → Environment Variables → `MYFXBOOK_EMAIL`, `MYFXBOOK_PASSWORD`, puis redéployer.
 
 ## Structure
 
 ```
-index.html         page
-api/price.js       prix Swissquote
-api/positions.js   FastBull + Myfxbook
+index.html         zones d'achat / de vente
+scalp.html         paper trading + SQLite
+xau.js             zones, stratégies, moteur, graphique (partagé)
+api/price.js       prix Swissquote (+ secours gold-api.com)
 dev.js             serveur local
+test.js            node test.js : vérifie zones + moteur
 ```

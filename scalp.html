@@ -1,0 +1,190 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XAUUSD Scalping</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1b1f24;--mut:#6b7380;--long:#1f9d55;--short:#d64545;--card:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#121417;--fg:#e8eaed;--mut:#9aa1ab;--card:#1c1f24;color-scheme:dark}}
+body{margin:0 auto;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;padding:16px;max-width:1000px}
+h1{font-size:20px;margin:0;display:flex;justify-content:space-between;align-items:baseline}h2{font-size:15px;margin:20px 0 6px}.mut{color:var(--mut)}
+a{color:inherit}
+.px{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums}
+canvas{width:100%;height:300px;display:block;background:var(--card);border-radius:8px;margin-top:8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
+.c{background:var(--card);padding:10px;border-radius:8px}.c label{display:flex;justify-content:space-between;gap:6px;margin:3px 0;font-size:12px}
+.c input[type=number]{width:70px;font:inherit;background:var(--bg);color:var(--fg);border:1px solid #8884;border-radius:4px;padding:1px 4px}
+.c b{font-size:14px}.st{font-size:12px;margin-top:6px;min-height:16px;font-variant-numeric:tabular-nums}
+button,select,textarea{font:inherit;background:var(--card);color:var(--fg);border:1px solid #8884;border-radius:6px;padding:4px 10px}
+button{cursor:pointer}textarea{width:100%;box-sizing:border-box;height:70px;font-family:ui-monospace,monospace;font-size:12px;margin:6px 0}
+.wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13px}
+td,th{padding:4px 6px;text-align:right;border-bottom:1px solid #8883;white-space:nowrap}th:first-child,td:first-child{text-align:left}
+.pos{color:var(--long)}.neg{color:var(--short)}
+.chart{position:relative}.tip{position:absolute;top:16px;display:none;pointer-events:none;background:var(--card);border:1px solid #8886;
+  border-radius:6px;padding:6px 8px;font-size:12px;box-shadow:0 2px 10px #0003;white-space:nowrap;font-variant-numeric:tabular-nums}
+.tip table{width:auto;font-size:12px}.tip td,.tip th{padding:2px 6px}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+<script src="xau.js"></script></head><body>
+<h1>XAUUSD Scalping <a href="/">← Zones</a></h1>
+<div class="px" id="px">–</div><div class="mut" id="pxm">Chargement de SQLite…</div>
+<div class="chart"><canvas id="cv"></canvas><div class="tip" id="tip"></div></div>
+<p class="mut">Paper trading sur le prix Swissquote live : 1 oz par trade, achat au ask, vente au bid (spread payé). ▲▼ entrées, ○ sorties (vert = gain).</p>
+<h2>Stratégies</h2><div class="grid" id="st"></div>
+<p><button id="replay">Rejouer tout l'historique avec ces paramètres</button> <span class="mut" id="rm"></span></p>
+<div class="wrap"><table id="res"></table></div>
+<h2>Derniers trades live</h2><div class="wrap"><table id="tr"></table></div>
+<h2>Base SQLite <span class="mut" id="dbm"></span></h2>
+<select id="q"></select>
+<textarea id="sql" spellcheck="false"></textarea>
+<button id="run">Exécuter</button> <button id="exp">Exporter .sqlite</button> <button id="rst">Vider la base</button>
+<div class="wrap" id="out"></div>
+<script>
+(async () => {
+const $ = id => document.getElementById(id), CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/';
+const LBL = { sl: 'Stop $', tp: 'Objectif $', maxMin: 'Durée max (min)', maxSpread: 'Spread max $', pause: 'Pause après trade (s)',
+  dist: 'Distance zone $', ticks: 'Ticks consécutifs', marge: 'Marge cassure $', move: 'Mouvement min $', win: 'Fenêtre (ticks)', k: 'Écarts-types' };
+const Q = {
+  'PnL par stratégie': `SELECT strategy, mode, COUNT(*) trades, ROUND(AVG(pnl > 0) * 100) "gain %", ROUND(SUM(pnl), 2) "pnl $", ROUND(AVG(pnl), 2) "moy $"
+FROM trades GROUP BY strategy, mode ORDER BY strategy, mode`,
+  'Trades live récents': `SELECT strategy, side, time(entry_ts / 1000, 'unixepoch', 'localtime') entree, entry, exit, ROUND(pnl, 2) pnl, reason
+FROM trades WHERE mode = 'live' ORDER BY id DESC LIMIT 50`,
+  'Sorties par raison': `SELECT strategy, mode, reason, COUNT(*) n, ROUND(SUM(pnl), 2) pnl FROM trades GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`,
+  'Bougies 1 min': `SELECT datetime(ts / 60000 * 60, 'unixepoch', 'localtime') minute, COUNT(*) ticks, ROUND(MIN((bid + ask) / 2), 2) bas,
+  ROUND(MAX((bid + ask) / 2), 2) haut, ROUND(AVG(ask - bid), 3) spread FROM ticks GROUP BY ts / 60000 ORDER BY 1 DESC LIMIT 60`,
+  'Taille de la base': `SELECT (SELECT COUNT(*) FROM ticks) ticks, (SELECT COUNT(*) FROM trades) trades,
+  datetime(MIN(ts) / 1000, 'unixepoch', 'localtime') debut, datetime(MAX(ts) / 1000, 'unixepoch', 'localtime') fin FROM ticks`,
+};
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const table = r => !r ? '<p class="mut">Aucun résultat.</p>' : `<table><tr>${r.columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr>${r.values.slice(0, 500).map(v =>
+  `<tr>${v.map((x, i) => `<td class="${/pnl/.test(r.columns[i]) && x ? (x > 0 ? 'pos' : 'neg') : ''}">${esc(x)}</td>`).join('')}</tr>`).join('')}</table>`;
+
+// --- Base SQLite (sql.js), sauvegardée dans IndexedDB de ce navigateur
+const idb = (mode, fn) => new Promise((ok, ko) => {
+  const r = indexedDB.open('xau-scalp', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('db');
+  r.onerror = () => ko(r.error);
+  r.onsuccess = () => { const q = fn(r.result.transaction('db', mode).objectStore('db')); q.onsuccess = () => ok(q.result); q.onerror = () => ko(q.error); };
+});
+// Un seul onglet écrit dans la base (sinon les sauvegardes s'écrasent mutuellement)
+const seul = await new Promise(ok => navigator.locks.request('xau-scalp', { ifAvailable: true }, l => { ok(!!l); return l && new Promise(() => {}); }));
+if (!seul) return $('pxm').textContent = 'Déjà ouverte dans un autre onglet : fermez-le puis rechargez cette page.';
+const SQL = await initSqlJs({ locateFile: f => CDN + f });
+let saved; try { saved = await idb('readonly', s => s.get('main')); } catch (e) {}
+const db = new SQL.Database(saved);
+db.exec(`CREATE TABLE IF NOT EXISTS ticks(ts INTEGER PRIMARY KEY, bid REAL, ask REAL);
+CREATE TABLE IF NOT EXISTS trades(id INTEGER PRIMARY KEY, mode TEXT, strategy TEXT, side TEXT, entry_ts INTEGER, entry REAL,
+  exit_ts INTEGER, exit REAL, pnl REAL, reason TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS trades_u ON trades(mode, strategy, entry_ts)`);
+// Journal synchrone (localStorage) : écritures pas encore dans la sauvegarde IndexedDB + positions ouvertes.
+// Écrit à chaque tick et rejoué au chargement → un rechargement ne perd rien.
+let wal = { q: [], pos: {}, last: {} };
+try { wal = JSON.parse(localStorage.getItem('xau-wal')) || wal; } catch (e) {}
+for (const [q, p] of wal.q) try { db.run(q, p); } catch (e) {}
+const run = (q, p) => { db.run(q, p); wal.q.push([q, p]); };
+const flush = () => { wal.pos = E.S.pos; wal.last = E.S.last; try { localStorage.setItem('xau-wal', JSON.stringify(wal)); } catch (e) {} };
+const save = async () => {
+  const n = wal.q.length;
+  try { await idb('readwrite', s => s.put(db.export(), 'main')); wal.q.splice(0, n); flush(); } catch (e) { console.warn('sauvegarde', e); }
+};
+setInterval(save, 15000); addEventListener('pagehide', () => flush());
+const rows = (q, p) => db.exec(q, p)[0]?.values || [];
+const ins = (mode, f = (q, p) => db.run(q, p)) => t => f('INSERT OR IGNORE INTO trades(mode,strategy,side,entry_ts,entry,exit_ts,exit,pnl,reason) VALUES (?,?,?,?,?,?,?,?,?)',
+  [mode, t.strategy, t.side, t.entry_ts, t.entry, t.exit_ts, t.exit, t.pnl, t.reason]);
+
+// --- Paramètres (modifiables, mémorisés dans ce navigateur)
+let stored = {}; try { stored = JSON.parse(localStorage.getItem('xau-params')) || {}; } catch (e) {}
+const params = Object.fromEntries(Object.entries(STRATS).map(([k, s]) => [k, { on: true, ...s.p, ...stored[k] }]));
+const saveParams = () => { try { localStorage.setItem('xau-params', JSON.stringify(params)); } catch (e) {} };
+$('st').innerHTML = Object.entries(STRATS).map(([k, s]) => `<div class="c"><label><b>${s.nom}</b><input type="checkbox" data-k="${k}" data-p="on" ${params[k].on ? 'checked' : ''}></label>
+  ${Object.keys(s.p).map(p => `<label>${LBL[p] || p}<input type="number" step="any" data-k="${k}" data-p="${p}" value="${params[k][p]}"></label>`).join('')}
+  <div class="st" id="st-${k}"></div></div>`).join('');
+$('st').oninput = e => { const { k, p } = e.target.dataset; if (!k) return;
+  params[k][p] = p === 'on' ? e.target.checked : +e.target.value; saveParams(); };
+
+// --- Moteur live : réchauffé avec les 4 dernières heures de ticks (sans trader)
+const live = () => engine(params, t => { ins('live', run)(t); render(); });
+let E = live(), tick;
+for (const [ts, b, a] of rows('SELECT ts, bid, ask FROM ticks WHERE ts > ? ORDER BY ts', [Date.now() - 4 * 3600e3])) { E.tick(ts, b, a, false); tick = { bid: b, ask: a }; }
+Object.assign(E.S.pos, wal.pos); Object.assign(E.S.last, wal.last);
+
+// --- Graphique + infobulle au survol : position de chaque stratégie à cet instant + PnL cumulé jusque-là
+let hx = null;
+$('cv').onmousemove = e => { hx = e.offsetX; draw(); };
+$('cv').onmouseleave = () => { hx = null; draw(); };
+const sign = v => (v > 0 ? '+' : '') + v.toFixed(2), cls = v => v > 0 ? 'pos' : 'neg', sens = s => s === 'buy' ? 'Achat' : 'Vente';
+function draw() {
+  const now = E.S.h.length ? E.S.h[E.S.h.length - 1][0] : Date.now(), span = 5 * 60e3, marks = [];
+  for (const [side, ets, en, xts, ex, pnl] of rows(`SELECT side, entry_ts, entry, exit_ts, exit, pnl FROM trades WHERE mode = 'live' AND exit_ts > ?`, [now - span]))
+    marks.push({ ts: ets, price: en, side }, { ts: xts, price: ex, side, exit: true, win: pnl > 0 });
+  for (const p of Object.values(E.S.pos)) marks.push({ ts: p.entry_ts, price: p.entry, side: p.side });
+  const hit = drawChart($('cv'), E.S.h, E.S.zones, span, marks, hx), tip = $('tip');
+  if (!hit) return tip.style.display = 'none';
+  const T = hit.ts, tol = hit.tol;
+  const tr = rows(`SELECT strategy, side, entry, exit, pnl, reason FROM trades WHERE mode = 'live' AND entry_ts <= ? AND exit_ts >= ? ORDER BY entry_ts DESC`, [T + tol, T - tol]);
+  const cum = Object.fromEntries(rows(`SELECT strategy, SUM(pnl), COUNT(*) FROM trades WHERE mode = 'live' AND exit_ts <= ? GROUP BY strategy`, [T]).map(r => [r[0], r]));
+  const z = E.S.zones.find(z => hit.price >= z.lo && hit.price <= z.hi);
+  tip.innerHTML = `<b>${new Date(T).toLocaleTimeString('fr-FR')}</b> · ${hit.price.toFixed(2)}${z ? ` · dans une zone ${z.side === 'buy' ? "d'achat" : 'de vente'} ×${z.n}` : ''}
+    <table><tr><th>Stratégie</th><th>Position</th><th>Cumul</th></tr>${Object.entries(STRATS).map(([k, s]) => {
+      const t = tr.find(r => r[0] === k), o = E.S.pos[k], c = cum[k];
+      let st = '<span class="mut">—</span>';
+      if (t) st = `${sens(t[1])} ${t[2].toFixed(2)} → ${t[3].toFixed(2)} <span class="${cls(t[4])}">${sign(t[4])} $</span> (${t[5]})`;
+      else if (o && o.entry_ts <= T + tol) { const u = (hit.price - o.entry) * (o.side === 'buy' ? 1 : -1);
+        st = `${sens(o.side)} ${o.entry.toFixed(2)} en cours <span class="${cls(u)}">≈ ${sign(u)} $</span>`; }
+      return `<tr><td>${s.nom}${params[k].on ? '' : ' <span class="mut">(off)</span>'}</td><td>${st}</td>
+        <td class="${c ? cls(c[1]) : ''}">${c ? `${sign(c[1])} $ (${c[2]})` : '–'}</td></tr>`;
+    }).join('')}</table>`;
+  tip.style.display = 'block';
+  tip.style.left = Math.max(0, hx > $('cv').clientWidth / 2 ? hx - tip.offsetWidth - 12 : hx + 12) + 'px';
+}
+
+function render() {
+  draw();
+  for (const k in STRATS) {
+    const p = E.S.pos[k], el = $('st-' + k);
+    if (!p || !tick) { el.innerHTML = '<span class="mut">Pas de position</span>'; continue; }
+    const u = ((p.side === 'buy' ? tick.bid : tick.ask) - p.entry) * (p.side === 'buy' ? 1 : -1);
+    el.innerHTML = `${p.side === 'buy' ? 'Achat' : 'Vente'} @ ${p.entry.toFixed(2)} · <span class="${u >= 0 ? 'pos' : 'neg'}">${u.toFixed(2)} $</span>`;
+  }
+  $('res').innerHTML = table(db.exec(Q['PnL par stratégie'])[0]);
+  $('tr').innerHTML = table(db.exec(Q['Trades live récents'].replace('50', '15'))[0]);
+  const [[n]] = rows('SELECT COUNT(*) FROM ticks');
+  $('dbm').textContent = `· ${n} ticks`;
+}
+
+// --- Flux live
+let prev;
+async function poll() {
+  try {
+    const j = await (await fetch('/api/price')).json();
+    $('px').textContent = ((j.bid + j.ask) / 2).toFixed(2);
+    $('pxm').textContent = `${j.source} · Bid ${j.bid.toFixed(2)} · Ask ${j.ask.toFixed(2)} · spread ${(j.ask - j.bid).toFixed(2)} · ${new Date(j.ts).toLocaleTimeString('fr-FR')}`;
+    if (j.source !== 'Swissquote') return $('pxm').textContent += ' · source de secours sans spread : tick non enregistré';
+    if (prev && prev.bid === j.bid && prev.ask === j.ask) return; // marché figé
+    prev = tick = j;
+    run('INSERT OR IGNORE INTO ticks VALUES (?, ?, ?)', [j.ts, j.bid, j.ask]);
+    E.tick(j.ts, j.bid, j.ask);
+    flush();
+    render();
+  } catch (e) { $('pxm').textContent = 'Prix indisponible'; }
+}
+
+// --- Rejeu : mêmes règles, tous les ticks enregistrés, paramètres actuels (mode = 'replay')
+$('replay').onclick = () => {
+  db.run("DELETE FROM trades WHERE mode = 'replay'");
+  const R = engine(params, ins('replay')), all = rows('SELECT ts, bid, ask FROM ticks ORDER BY ts'), t = performance.now();
+  for (const [ts, b, a] of all) R.tick(ts, b, a);
+  $('rm').textContent = `${all.length} ticks rejoués en ${Math.round(performance.now() - t)} ms (positions encore ouvertes ignorées)`;
+  save(); render();
+};
+
+// --- Console SQL
+$('q').innerHTML = Object.keys(Q).map(k => `<option>${k}</option>`).join('');
+$('q').onchange = () => { $('sql').value = Q[$('q').value]; $('run').onclick(); };
+$('run').onclick = () => { try { $('out').innerHTML = db.exec($('sql').value).map(table).join('') || table(); } catch (e) { $('out').innerHTML = `<p class="neg">${esc(e.message)}</p>`; } };
+$('exp').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([db.export()])); a.download = 'xau-scalp.sqlite'; a.click(); };
+$('rst').onclick = () => { if (!confirm('Supprimer tous les ticks et trades ?')) return;
+  db.exec('DELETE FROM ticks; DELETE FROM trades'); wal.q = []; E = live(); flush(); save(); render(); };
+$('q').onchange();
+
+render(); poll(); setInterval(poll, 1000); addEventListener('resize', render);
+})();
+</script></body></html>

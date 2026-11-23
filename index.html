@@ -3,36 +3,60 @@
 <style>
 :root{--bg:#f6f7f9;--fg:#1b1f24;--mut:#6b7380;--long:#1f9d55;--short:#d64545;--card:#fff}
 @media (prefers-color-scheme:dark){:root{--bg:#121417;--fg:#e8eaed;--mut:#9aa1ab;--card:#1c1f24;color-scheme:dark}}
-body{margin:0 auto;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;padding:16px;max-width:760px}
-h1{font-size:20px;margin:0}h2{font-size:15px;margin:20px 0 4px}.mut{color:var(--mut)}
+body{margin:0 auto;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;padding:16px;max-width:900px}
+h1{font-size:20px;margin:0;display:flex;justify-content:space-between;align-items:baseline}h2{font-size:15px;margin:20px 0 4px}.mut{color:var(--mut)}
+a{color:inherit}
 .px{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums;transition:color .3s}
-.bar{display:flex;height:26px;border-radius:6px;overflow:hidden;margin:8px 0;font-weight:600;color:#fff}
-.bar div{display:flex;align-items:center;padding:0 8px;white-space:nowrap}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
-.c{background:var(--card);padding:10px;border-radius:8px}.c b{font-size:18px;display:block;font-variant-numeric:tabular-nums}
+canvas{width:100%;height:340px;display:block;background:var(--card);border-radius:8px;margin-top:8px}
+.seg button{background:var(--card);color:var(--fg);border:1px solid #8884;padding:4px 10px;border-radius:6px;cursor:pointer;font:inherit}
+.seg button.on{border-color:var(--fg);font-weight:600}
+.chart{position:relative}.tip{position:absolute;top:16px;display:none;pointer-events:none;background:var(--card);border:1px solid #8886;
+  border-radius:6px;padding:6px 8px;font-size:12px;box-shadow:0 2px 10px #0003;white-space:nowrap;font-variant-numeric:tabular-nums}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 td,th{padding:4px 6px;text-align:right;border-bottom:1px solid #8883}th:first-child,td:first-child{text-align:left}
-</style></head><body>
-<h1>XAUUSD Live</h1>
+</style><script src="xau.js"></script></head><body>
+<h1>XAUUSD Live <a href="scalp.html">Scalping →</a></h1>
 <div class="px" id="px">–</div><div class="mut" id="pxm">Prix Swissquote, rafraîchi chaque seconde</div>
-<div id="mf"></div>
-<h2>FastBull <span class="mut" id="fbm"></span></h2>
-<div class="bar"><div id="bl" style="background:var(--long)"></div><div id="bs" style="background:var(--short);flex:1;justify-content:flex-end"></div></div>
-<div class="grid"><div class="c"><span class="mut">Longs en gain</span><b id="lg">–</b></div><div class="c"><span class="mut">Shorts en gain</span><b id="sg">–</b></div></div>
-<h2>Niveaux principaux</h2>
-<table><thead><tr><th>Prix</th><th>Long %</th><th>Short %</th></tr></thead><tbody id="tb"></tbody></table>
+<h2>Zones d'achat / de vente</h2>
+<div class="seg" id="seg"><button data-s="900000">15 min</button> <button data-s="3600000" class="on">1 h</button> <button data-s="14400000">4 h</button></div>
+<div class="chart"><canvas id="cv"></canvas><div class="tip" id="tip"></div></div>
+<p class="mut" id="zm">Zones = plus hauts / plus bas locaux (bougies 1 min) regroupés, calculés uniquement sur le prix live.
+Sous le prix : zone d'achat (support), au-dessus : zone de vente (résistance). Historique conservé 4 h dans ce navigateur.</p>
+<table><thead><tr><th>Type</th><th>Zone</th><th>Distance</th><th>Touches</th></tr></thead><tbody id="tb"></tbody></table>
 <script>
-const $=id=>document.getElementById(id),f=n=>n.toFixed(1)+' %',t=ms=>new Date(ms).toLocaleTimeString('fr-FR');
-let last=0;
-async function price(){try{const j=await (await fetch('/api/price')).json();const m=(j.bid+j.ask)/2;
- $('px').textContent=m.toFixed(2);$('px').style.color=m>last?'var(--long)':m<last?'var(--short)':'';last=m;
- $('pxm').textContent=j.source+' · Bid '+j.bid.toFixed(2)+' · Ask '+j.ask.toFixed(2)+' · '+t(Date.now());}catch(e){$('pxm').textContent='Prix indisponible'}}
-async function pos(){try{const j=await (await fetch('/api/positions')).json(),fb=j.fastbull,mf=j.myfxbook;
- if(!fb.error){$('bl').style.width=fb.long+'%';$('bl').textContent='Long '+f(fb.long);$('bs').textContent='Short '+f(fb.short);
-  $('lg').textContent=f(fb.longWin);$('sg').textContent=f(fb.shortWin);$('fbm').textContent='· snapshot '+t(fb.updated)+' (toutes les 30 min)';
-  $('tb').innerHTML=fb.levels.map(r=>`<tr><td>${r[0].toFixed(2)}</td><td style="color:var(--long)">${r[1].toFixed(2)}</td><td style="color:var(--short)">${r[2].toFixed(2)}</td></tr>`).join('');}
- $('mf').innerHTML=mf&&!mf.error?`<h2>Myfxbook <span class="mut">· ${t(mf.updated)}</span></h2><div class="bar"><div style="background:var(--long);width:${mf.long}%">Long ${f(mf.long)}</div><div style="background:var(--short);flex:1;justify-content:flex-end">Short ${f(mf.short)}</div></div><div class="mut">Prix moyen long ${mf.avgLong} · short ${mf.avgShort}</div>`
-  :`<p class="mut">Myfxbook : ${mf?mf.error:'non configuré (ajouter MYFXBOOK_EMAIL / MYFXBOOK_PASSWORD sur Vercel)'}</p>`;
-}catch(e){$('fbm').textContent='Erreur'}}
-price();pos();setInterval(price,1000);setInterval(pos,60000);
+const $ = id => document.getElementById(id), H4 = 4 * 3600e3;
+let hist = [], last = 0, span = 3600e3, hx = null;
+try { hist = JSON.parse(localStorage.getItem('xau-hist')) || []; } catch (e) {}
+const keep = () => { try { localStorage.setItem('xau-hist', JSON.stringify(hist)); } catch (e) {} };
+setInterval(keep, 15000); addEventListener('pagehide', keep);
+$('cv').onmousemove = e => { hx = e.offsetX; draw(); };
+$('cv').onmouseleave = () => { hx = null; draw(); };
+$('seg').onclick = e => { if (!e.target.dataset.s) return; span = +e.target.dataset.s;
+  for (const b of $('seg').children) b.classList.toggle('on', b === e.target); draw(); };
+function draw() {
+  if (!hist.length) return drawChart($('cv'), hist, [], span);
+  const m = hist[hist.length - 1][1], zs = zones(hist, m), hit = drawChart($('cv'), hist, zs, span, [], hx), tip = $('tip');
+  tip.style.display = hit ? 'block' : 'none';
+  if (hit) {
+    const z = zs.find(z => hit.price >= z.lo && hit.price <= z.hi);
+    tip.innerHTML = `<b>${new Date(hit.ts).toLocaleTimeString('fr-FR')}</b> · ${hit.price.toFixed(2)} · ${(hit.price - m >= 0 ? '+' : '') + (hit.price - m).toFixed(2)} $ vs maintenant`
+      + (z ? `<br>Zone ${z.side === 'buy' ? "d'achat" : 'de vente'} ${z.lo.toFixed(2)} – ${z.hi.toFixed(2)} ×${z.n}` : '');
+    tip.style.left = Math.max(0, hx > $('cv').clientWidth / 2 ? hx - tip.offsetWidth - 12 : hx + 12) + 'px';
+  }
+  $('tb').innerHTML = zs.sort((a, b) => Math.abs((a.lo + a.hi) / 2 - m) - Math.abs((b.lo + b.hi) / 2 - m)).slice(0, 8).map(z =>
+    `<tr><td style="color:var(--${z.side === 'buy' ? 'long' : 'short'})">${z.side === 'buy' ? 'Achat' : 'Vente'}</td>
+     <td>${z.lo.toFixed(2)} – ${z.hi.toFixed(2)}</td><td>${((z.lo + z.hi) / 2 - m).toFixed(2)} $</td><td>${z.n}</td></tr>`).join('')
+    || '<tr><td colspan="4" class="mut">Pas encore de zone : il faut ~5 min d\'historique.</td></tr>';
+}
+async function price() {
+  try {
+    const j = await (await fetch('/api/price')).json(), m = (j.bid + j.ask) / 2;
+    $('px').textContent = m.toFixed(2); $('px').style.color = m > last ? 'var(--long)' : m < last ? 'var(--short)' : ''; last = m;
+    $('pxm').textContent = j.source + ' · Bid ' + j.bid.toFixed(2) + ' · Ask ' + j.ask.toFixed(2) + ' · ' + new Date(j.ts).toLocaleTimeString('fr-FR');
+    hist.push([j.ts, m]);
+    while (hist[0][0] < j.ts - H4) hist.shift();
+  } catch (e) { $('pxm').textContent = 'Prix indisponible'; }
+  draw();
+}
+price(); setInterval(price, 1000); addEventListener('resize', draw);
 </script></body></html>

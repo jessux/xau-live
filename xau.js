@@ -1,0 +1,153 @@
+// Logique partagée (navigateur + `node test.js`) : zones buy/sell à partir du prix seul, stratégies, graphique.
+
+// Zones : pivots (plus haut / plus bas local sur ±win bougies 1 min), pivots proches regroupés.
+// Zone sous le prix = achat (support), au-dessus = vente (résistance). ticks = [[ts, mid], ...] triés.
+function zones(ticks, price, win = 2, merge = 1.5) {
+  const bars = [];
+  for (const [t, p] of ticks) {
+    const k = Math.floor(t / 60000), b = bars[bars.length - 1];
+    if (b && b.k === k) { b.h = Math.max(b.h, p); b.l = Math.min(b.l, p); } else bars.push({ k, h: p, l: p });
+  }
+  const piv = [];
+  for (let i = win; i < bars.length - win; i++) {
+    const s = bars.slice(i - win, i + win + 1);
+    if (s.every(x => x.h <= bars[i].h)) piv.push(bars[i].h);
+    if (s.every(x => x.l >= bars[i].l)) piv.push(bars[i].l);
+  }
+  piv.sort((a, b) => a - b);
+  const out = [];
+  for (const p of piv) {
+    const z = out[out.length - 1];
+    if (z && p - z.hi <= merge && p - z.lo <= 3) { z.hi = p; z.n++; } else out.push({ lo: p, hi: p, n: 1 });
+  }
+  return out.map(z => ({ lo: z.lo - .3, hi: z.hi + .3, n: z.n, side: (z.lo + z.hi) / 2 < price ? 'buy' : 'sell' }));
+}
+
+// Stratégies : signal(ctx, params) → 'buy' | 'sell' | undefined. ctx = { h: [[ts, mid]], zones, mid, prev }
+const mids = (h, n) => h.slice(-n).map(x => x[1]);
+const mono = (a, dir, n) => a.length === n && a.every((x, i) => i === 0 || (x - a[i - 1]) * dir > 0);
+const BASE = { sl: 2, tp: 4, maxMin: 10, maxSpread: 0.8, pause: 30 };
+const STRATS = {
+  rebond: {
+    nom: 'Rebond sur zone', p: { ...BASE, dist: 1, ticks: 3 }, signal(c, p) {
+      const m = mids(c.h, p.ticks + 1);
+      for (const z of c.zones) {
+        if (z.side === 'buy' && c.mid >= z.lo && c.mid - z.hi <= p.dist && mono(m, 1, p.ticks + 1)) return 'buy';
+        if (z.side === 'sell' && c.mid <= z.hi && z.lo - c.mid <= p.dist && mono(m, -1, p.ticks + 1)) return 'sell';
+      }
+    }
+  },
+  cassure: {
+    nom: 'Cassure de zone', p: { ...BASE, marge: 0.5 }, signal(c, p) {
+      for (const z of c.zones) {
+        if (c.prev <= z.hi + p.marge && c.mid > z.hi + p.marge) return 'buy';
+        if (c.prev >= z.lo - p.marge && c.mid < z.lo - p.marge) return 'sell';
+      }
+    }
+  },
+  momentum: {
+    nom: 'Momentum ticks', p: { ...BASE, sl: 1.5, tp: 3, ticks: 5, move: 1 }, signal(c, p) {
+      const m = mids(c.h, p.ticks + 1), d = m[m.length - 1] - m[0];
+      if (Math.abs(d) >= p.move && mono(m, Math.sign(d), p.ticks + 1)) return d > 0 ? 'buy' : 'sell';
+    }
+  },
+  moyenne: {
+    nom: 'Retour à la moyenne', p: { ...BASE, sl: 3, tp: 2, win: 120, k: 2.5 }, signal(c, p) {
+      const m = mids(c.h, p.win);
+      if (m.length < p.win) return;
+      const mu = m.reduce((a, x) => a + x, 0) / m.length, sd = Math.sqrt(m.reduce((a, x) => a + (x - mu) ** 2, 0) / m.length);
+      if (sd > 0 && c.mid > mu + p.k * sd) return 'sell';
+      if (sd > 0 && c.mid < mu - p.k * sd) return 'buy';
+    }
+  },
+};
+
+// Moteur : 1 position de 1 oz max par stratégie. Achat au ask, sortie au bid (le spread est payé).
+// params[k] = { on, ...STRATS[k].p } ; onTrade(trade fermé). tick(..., false) = historique sans trader.
+function engine(params, onTrade) {
+  const S = { h: [], zones: [], zt: 0, pos: {}, last: {} };
+  return {
+    S, tick(ts, bid, ask, trade = true) {
+      const mid = (bid + ask) / 2, prev = S.h.length ? S.h[S.h.length - 1][1] : mid;
+      S.h.push([ts, mid]);
+      if (S.h.length > 18000) S.h.splice(0, S.h.length - 14400); // ~4 h à 1 tick/s
+      if (ts - S.zt >= 60000) { S.zones = zones(S.h, mid); S.zt = ts; }
+      for (const z of S.zones) z.side = (z.lo + z.hi) / 2 < mid ? 'buy' : 'sell';
+      if (!trade) return;
+      for (const k in STRATS) {
+        const p = params[k], pos = S.pos[k];
+        if (pos) {
+          const dir = pos.side === 'buy' ? 1 : -1, exit = dir > 0 ? bid : ask, pnl = (exit - pos.entry) * dir;
+          const reason = pnl <= -p.sl ? 'stop' : pnl >= p.tp ? 'objectif' : ts - pos.entry_ts >= p.maxMin * 60000 ? 'temps' : null;
+          if (reason) { delete S.pos[k]; S.last[k] = ts; onTrade({ ...pos, exit_ts: ts, exit, pnl, reason }); }
+        } else if (p.on && ask - bid <= p.maxSpread && ts - (S.last[k] || 0) >= p.pause * 1000) {
+          const side = STRATS[k].signal({ h: S.h, zones: S.zones, mid, prev }, p);
+          if (side) S.pos[k] = { strategy: k, side, entry_ts: ts, entry: side === 'buy' ? ask : bid };
+        }
+      }
+    }
+  };
+}
+
+// Graphique canvas : prix, zones, chiffres ronds, marques de trades { ts, price, side, exit, win }.
+// hx = position x de la souris (px CSS) → réticule + retourne le tick survolé { ts, price, tol }.
+function drawChart(cv, pts, zs, span, marks = [], hx = null) {
+  const W = cv.clientWidth, H = cv.clientHeight, dpr = window.devicePixelRatio || 1, g = cv.getContext('2d');
+  cv.width = W * dpr; cv.height = H * dpr; g.scale(dpr, dpr);
+  const css = n => getComputedStyle(document.body).getPropertyValue(n).trim(), fg = css('--fg'), mut = css('--mut');
+  g.font = '11px system-ui,sans-serif'; g.fillStyle = mut;
+  if (pts.length < 2) return g.fillText('En attente de ticks…', 10, 20);
+  const t1 = pts[pts.length - 1][0], t0 = t1 - span, px = pts[pts.length - 1][1], vis = pts.filter(p => p[0] >= t0);
+  let lo = Infinity, hi = -Infinity;
+  for (const [, p] of vis) { lo = Math.min(lo, p); hi = Math.max(hi, p); }
+  const below = zs.filter(z => z.hi < px).sort((a, b) => b.hi - a.hi)[0], above = zs.filter(z => z.lo > px).sort((a, b) => a.lo - b.lo)[0];
+  if (below) lo = Math.min(lo, below.lo);
+  if (above) hi = Math.max(hi, above.hi);
+  const pad = Math.max((hi - lo) * .08, .5); lo -= pad; hi += pad;
+  const R = 62, B = 18, X = t => (t - t0) / span * (W - R), Y = p => (hi - p) / (hi - lo) * (H - B);
+
+  const step = [.5, 1, 2, 5, 10, 25, 50, 100].find(s => (hi - lo) / s <= 6);
+  g.strokeStyle = mut; g.setLineDash([3, 3]);
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+    g.globalAlpha = .3; g.beginPath(); g.moveTo(0, Y(v)); g.lineTo(W - R, Y(v)); g.stroke();
+    g.globalAlpha = 1; g.fillText(v.toFixed(step < 1 ? 1 : 0), W - R + 6, Y(v) + 4);
+  }
+  g.setLineDash([]);
+  [t0, t0 + span / 2, t1].forEach((t, i) => {
+    g.textAlign = ['left', 'center', 'right'][i];
+    g.fillText(new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }), Math.min(X(t), W - R), H - 4);
+  });
+  g.textAlign = 'left';
+
+  g.save(); g.beginPath(); g.rect(0, 0, W - R, H - B); g.clip();
+  for (const z of zs) {
+    const col = css(z.side === 'buy' ? '--long' : '--short'), y = Y(z.hi), h = Math.max(Y(z.lo) - y, 2);
+    g.fillStyle = col; g.globalAlpha = Math.min(.12 + .08 * z.n, .45); g.fillRect(0, y, W - R, h);
+    g.globalAlpha = 1; g.fillText(`${z.side === 'buy' ? 'Achat' : 'Vente'} ×${z.n}`, 4, y + Math.min(h, 14) - 2);
+  }
+  g.strokeStyle = fg; g.lineWidth = 1.5; g.beginPath();
+  vis.forEach(([t, p], i) => i ? g.lineTo(X(t), Y(p)) : g.moveTo(X(t), Y(p)));
+  g.stroke();
+  for (const m of marks) {
+    if (m.ts < t0) continue;
+    const x = X(m.ts), y = Y(m.price), d = m.side === 'buy' ? 1 : -1;
+    g.fillStyle = g.strokeStyle = css(m.exit ? (m.win ? '--long' : '--short') : (d > 0 ? '--long' : '--short'));
+    g.beginPath();
+    if (m.exit) { g.arc(x, y, 4, 0, 7); g.stroke(); } else { g.moveTo(x, y); g.lineTo(x - 5, y + 9 * d); g.lineTo(x + 5, y + 9 * d); g.fill(); }
+  }
+  g.restore();
+  g.fillStyle = fg; g.fillRect(W - R + 2, Y(px) - 8, R - 2, 16);
+  g.fillStyle = css('--card'); g.fillText(px.toFixed(2), W - R + 6, Y(px) + 4);
+  if (hx == null || hx > W - R) return null;
+  const t = t0 + hx / (W - R) * span;
+  let a = 0, b = pts.length - 1;
+  while (a < b) { const m = (a + b) >> 1; if (pts[m][0] < t) a = m + 1; else b = m; }
+  if (a > 0 && t - pts[a - 1][0] < pts[a][0] - t) a--;
+  const hit = { ts: pts[a][0], price: pts[a][1], tol: span / (W - R) * 4 }, x = X(hit.ts);
+  g.strokeStyle = mut; g.lineWidth = 1; g.setLineDash([2, 2]);
+  g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H - B); g.stroke(); g.setLineDash([]);
+  g.fillStyle = fg; g.beginPath(); g.arc(x, Y(hit.price), 3, 0, 7); g.fill();
+  return hit;
+}
+
+if (typeof module !== 'undefined') module.exports = { zones, engine, STRATS };
