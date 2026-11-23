@@ -26,7 +26,7 @@ const $=id=>document.getElementById(id),f=n=>n.toFixed(1)+' %',t=ms=>new Date(ms
 let last=0;
 async function price(){try{const j=await (await fetch('/api/price')).json();const m=(j.bid+j.ask)/2;
  $('px').textContent=m.toFixed(2);$('px').style.color=m>last?'var(--long)':m<last?'var(--short)':'';last=m;
- $('pxm').textContent='Bid '+j.bid.toFixed(2)+' · Ask '+j.ask.toFixed(2)+' · '+t(Date.now());}catch(e){$('pxm').textContent='Prix indisponible'}}
+ $('pxm').textContent=j.source+' · Bid '+j.bid.toFixed(2)+' · Ask '+j.ask.toFixed(2)+' · '+t(Date.now());}catch(e){$('pxm').textContent='Prix indisponible'}}
 async function pos(){try{const j=await (await fetch('/api/positions')).json(),fb=j.fastbull,mf=j.myfxbook;
  if(!fb.error){$('bl').style.width=fb.long+'%';$('bl').textContent='Long '+f(fb.long);$('bs').textContent='Short '+f(fb.short);
   $('lg').textContent=f(fb.longWin);$('sg').textContent=f(fb.shortWin);$('fbm').textContent='· snapshot '+t(fb.updated)+' (toutes les 30 min)';
