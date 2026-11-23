@@ -29,11 +29,14 @@ td,th{padding:4px 6px;text-align:right;border-bottom:1px solid #8883;white-space
 .book .wall{font-weight:700}.book .mid td{border-top:1px solid var(--fg);border-bottom:1px solid var(--fg)}
 .imb{display:flex;height:16px;border-radius:4px;overflow:hidden;margin:6px 0;color:#fff;font-size:11px;font-weight:600}
 .imb div{display:flex;align-items:center;padding:0 6px;white-space:nowrap}
+.seg{margin-top:8px}.seg button{padding:2px 8px}.seg button.on{border-color:var(--fg);font-weight:600}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
 <script src="xau.js"></script></head><body>
 <h1>XAUUSD Scalping <a href="/">← Zones</a></h1>
 <div class="px" id="px">–</div><div class="mut" id="pxm">Chargement de SQLite…</div>
+<div class="seg" id="seg"><button data-s="60000">1 min</button> <button data-s="300000">5 min</button> <button data-s="900000">15 min</button>
+  <button data-s="3600000">1 h</button> <button data-s="14400000">4 h</button> <span class="mut">· molette sur le graphique pour zoomer / dézoomer</span></div>
 <div class="top"><div class="chart"><canvas id="cv"></canvas><div class="tip" id="tip"></div></div>
 <div class="book"><b>Carnet d'ordres live</b> <span class="mut">· or tokenisé PAXG/XAUT (1 = 1 oz), recalé sur le spot</span><div id="book" class="mut">Chargement…</div></div></div>
 <p class="mut">Paper trading sur le prix Swissquote live : 1 oz par trade, achat au ask, vente au bid (spread payé). ▲▼ entrées, ○ sorties (vert = gain).
@@ -121,12 +124,13 @@ for (const r of rows(TQ + ' WHERE ts > ? ORDER BY ts', [Date.now() - 4 * 3600e3]
 Object.assign(E.S.pos, wal.pos); Object.assign(E.S.last, wal.last);
 
 // --- Graphique + infobulle au survol : position de chaque stratégie à cet instant + PnL cumulé jusque-là
-let hx = null;
+let hx = null, span = 5 * 60e3;
+zoomable($('cv'), $('seg'), () => span, s => { span = s; draw(); });
 $('cv').onmousemove = e => { hx = e.offsetX; draw(); };
 $('cv').onmouseleave = () => { hx = null; draw(); };
 const sign = v => (v > 0 ? '+' : '') + v.toFixed(2), cls = v => v > 0 ? 'pos' : 'neg', sens = s => s === 'buy' ? 'Achat' : 'Vente';
 function draw() {
-  const now = E.S.h.length ? E.S.h[E.S.h.length - 1][0] : Date.now(), span = 5 * 60e3, marks = [];
+  const now = E.S.h.length ? E.S.h[E.S.h.length - 1][0] : Date.now(), marks = [];
   for (const [side, ets, en, xts, ex, pnl] of rows(`SELECT side, entry_ts, entry, exit_ts, exit, pnl FROM trades WHERE mode = 'live' AND exit_ts > ?`, [now - span]))
     marks.push({ ts: ets, price: en, side }, { ts: xts, price: ex, side, exit: true, win: pnl > 0 });
   for (const p of Object.values(E.S.pos)) marks.push({ ts: p.entry_ts, price: p.entry, side: p.side });

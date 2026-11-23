@@ -18,10 +18,12 @@ td,th{padding:4px 6px;text-align:right;border-bottom:1px solid #8883}th:first-ch
 <h1>XAUUSD Live <a href="scalp.html">Scalping →</a></h1>
 <div class="px" id="px">–</div><div class="mut" id="pxm">Prix Swissquote, rafraîchi chaque seconde</div>
 <h2>Zones d'achat / de vente</h2>
-<div class="seg" id="seg"><button data-s="900000">15 min</button> <button data-s="3600000" class="on">1 h</button> <button data-s="14400000">4 h</button></div>
+<div class="seg" id="seg"><button data-s="300000">5 min</button> <button data-s="900000">15 min</button> <button data-s="3600000">1 h</button> <button data-s="14400000">4 h</button>
+  <span class="mut">· molette sur le graphique pour zoomer / dézoomer</span></div>
 <div class="chart"><canvas id="cv"></canvas><div class="tip" id="tip"></div></div>
-<p class="mut" id="zm">Zones = plus hauts / plus bas locaux (bougies 1 min) regroupés, calculés uniquement sur le prix live.
-Sous le prix : zone d'achat (support), au-dessus : zone de vente (résistance). Historique conservé 4 h dans ce navigateur.</p>
+<p class="mut" id="zm"><b style="color:var(--long)">Vert = zone d'achat</b> (support, sous le prix) · <b style="color:var(--short)">rouge = zone de vente</b> (résistance, au-dessus).
+Encadrée = la plus proche de chaque côté · bande = prix revenu au moins 2 fois · pointillé = niveau touché 1 seule fois (faible).
+Calculées sur les plus hauts / plus bas locaux (bougies 1 min) du prix live, historique de 4 h conservé dans ce navigateur.</p>
 <table><thead><tr><th>Type</th><th>Zone</th><th>Distance</th><th>Touches</th></tr></thead><tbody id="tb"></tbody></table>
 <script>
 const $ = id => document.getElementById(id), H4 = 4 * 3600e3;
@@ -31,8 +33,7 @@ const keep = () => { try { localStorage.setItem('xau-hist', JSON.stringify(hist)
 setInterval(keep, 15000); addEventListener('pagehide', keep);
 $('cv').onmousemove = e => { hx = e.offsetX; draw(); };
 $('cv').onmouseleave = () => { hx = null; draw(); };
-$('seg').onclick = e => { if (!e.target.dataset.s) return; span = +e.target.dataset.s;
-  for (const b of $('seg').children) b.classList.toggle('on', b === e.target); draw(); };
+zoomable($('cv'), $('seg'), () => span, s => { span = s; draw(); });
 function draw() {
   if (!hist.length) return drawChart($('cv'), hist, [], span);
   const m = hist[hist.length - 1][1], zs = zones(hist, m), hit = drawChart($('cv'), hist, zs, span, [], hx), tip = $('tip');

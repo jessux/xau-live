@@ -52,7 +52,7 @@ const STRATS = {
     }
   },
   desequilibre: {
-    nom: 'Déséquilibre carnet', p: { ...BASE, sl: 1.5, tp: 2, seuil: 0.4, ticks: 3 }, signal(c, p) {
+    nom: 'Déséquilibre carnet', p: { ...BASE, sl: 1.5, tp: 2, seuil: 0.2, ticks: 3 }, signal(c, p) {
       const im = c.h.slice(-p.ticks).map(x => x[2]);
       if (im.length < p.ticks) return;
       if (im.every(x => x >= p.seuil)) return 'buy';
@@ -135,14 +135,32 @@ function drawChart(cv, pts, zs, span, marks = [], hx = null) {
   g.textAlign = 'left';
 
   g.save(); g.beginPath(); g.rect(0, 0, W - R, H - B); g.clip();
+  // Zones : la plus proche de chaque côté = encadrée ; touchée ≥ 2 fois = bande ; 1 seule fois = pointillé sans étiquette
+  const labels = [];
   for (const z of zs) {
-    const col = css(z.side === 'buy' ? '--long' : '--short'), y = Y(z.hi), h = Math.max(Y(z.lo) - y, 2);
-    g.fillStyle = col; g.globalAlpha = Math.min(.12 + .08 * z.n, .45); g.fillRect(0, y, W - R, h);
-    g.globalAlpha = 1; g.fillText(`${z.side === 'buy' ? 'Achat' : 'Vente'} ×${z.n}`, 4, y + Math.min(h, 14) - 2);
+    const near = z === below || z === above, col = css(z.side === 'buy' ? '--long' : '--short'), y = Y(z.hi), h = Math.max(Y(z.lo) - y, 2);
+    g.fillStyle = g.strokeStyle = col; g.lineWidth = 1;
+    if (!near && z.n < 2) {
+      g.globalAlpha = .5; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(0, y + h / 2); g.lineTo(W - R, y + h / 2); g.stroke(); g.setLineDash([]);
+      continue;
+    }
+    g.globalAlpha = near ? .3 : .14; g.fillRect(0, y, W - R, h);
+    if (near) { g.globalAlpha = .9; g.strokeRect(0, y, W - R, h); }
+    if (y + h > 0 && y < H - B) labels.push({ z, near, col, y: Math.min(Math.max(y + h / 2, 9), H - B - 9) });
   }
+  g.globalAlpha = 1;
   g.strokeStyle = fg; g.lineWidth = 1.5; g.beginPath();
   vis.forEach(([t, p], i) => i ? g.lineTo(X(t), Y(p)) : g.moveTo(X(t), Y(p)));
   g.stroke();
+  for (const { z, near, col, y } of labels) {
+    const d = (z.lo + z.hi) / 2 - px;
+    const txt = `${z.side === 'buy' ? "Zone d'achat" : 'Zone de vente'} ${z.lo.toFixed(1)}–${z.hi.toFixed(1)} · ${z.n} touche${z.n > 1 ? 's' : ''}${near ? ` · ${d > 0 ? '+' : ''}${d.toFixed(1)} $` : ''}`;
+    g.font = `${near ? 'bold ' : ''}11px system-ui,sans-serif`;
+    const w = g.measureText(txt).width + 8;
+    g.fillStyle = css('--card'); g.globalAlpha = .85; g.fillRect(4, y - 8, w, 16);
+    g.globalAlpha = 1; g.fillStyle = col; g.fillText(txt, 8, y + 4);
+  }
+  g.font = '11px system-ui,sans-serif';
   for (const m of marks) {
     if (m.ts < t0) continue;
     const x = X(m.ts), y = Y(m.price), d = m.side === 'buy' ? 1 : -1;
@@ -163,6 +181,17 @@ function drawChart(cv, pts, zs, span, marks = [], hx = null) {
   g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H - B); g.stroke(); g.setLineDash([]);
   g.fillStyle = fg; g.beginPath(); g.arc(x, Y(hit.price), 3, 0, 7); g.fill();
   return hit;
+}
+
+// Molette = zoom (fenêtre de 1 min à 4 h) + boutons de durée dans `seg` (data-s en ms). set(span) redessine.
+function zoomable(cv, seg, get, set) {
+  const mark = () => { for (const b of seg.children) b.classList.toggle('on', +b.dataset.s === get()); };
+  cv.addEventListener('wheel', e => {
+    e.preventDefault();
+    set(Math.min(4 * 3600e3, Math.max(60e3, get() * (e.deltaY > 0 ? 1.25 : 0.8)))); mark();
+  }, { passive: false });
+  seg.onclick = e => { if (e.target.dataset.s) { set(+e.target.dataset.s); mark(); } };
+  mark();
 }
 
 if (typeof module !== 'undefined') module.exports = { zones, engine, STRATS };

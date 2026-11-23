@@ -23,10 +23,10 @@ assert.strictEqual(trades[1].side, 'sell');
 assert.strictEqual(trades[1].reason, 'stop');
 assert(trades[1].pnl <= -1.5);
 
-// Déséquilibre seul : prix plat, carnet acheteur ≥ 0,4 pendant 3 ticks → achat ; vendeur → rien tant que la position est ouverte
+// Déséquilibre seul : prix plat, carnet acheteur ≥ seuil (0,2) pendant 3 ticks → achat
 const p2 = Object.fromEntries(Object.entries(STRATS).map(([k, s]) => [k, { ...s.p, on: k === 'desequilibre', pause: 0 }]));
 const E2 = engine(p2, () => {});
-[0.5, 0.6, 0.2, 0.5, 0.5].forEach((imb, i) => E2.tick(i * 1000, 3699.9, 3700.1, true, { imb }));
+[0.5, 0.6, 0.1, 0.5, 0.5].forEach((imb, i) => E2.tick(i * 1000, 3699.9, 3700.1, true, { imb }));
 assert(!E2.S.pos.desequilibre);
 E2.tick(5000, 3699.9, 3700.1, true, { imb: 0.45 });
 assert.strictEqual(E2.S.pos.desequilibre.side, 'buy');
