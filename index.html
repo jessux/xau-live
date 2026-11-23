@@ -1,0 +1,38 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XAUUSD Live</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1b1f24;--mut:#6b7380;--long:#1f9d55;--short:#d64545;--card:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#121417;--fg:#e8eaed;--mut:#9aa1ab;--card:#1c1f24;color-scheme:dark}}
+body{margin:0 auto;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;padding:16px;max-width:760px}
+h1{font-size:20px;margin:0}h2{font-size:15px;margin:20px 0 4px}.mut{color:var(--mut)}
+.px{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums;transition:color .3s}
+.bar{display:flex;height:26px;border-radius:6px;overflow:hidden;margin:8px 0;font-weight:600;color:#fff}
+.bar div{display:flex;align-items:center;padding:0 8px;white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+.c{background:var(--card);padding:10px;border-radius:8px}.c b{font-size:18px;display:block;font-variant-numeric:tabular-nums}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+td,th{padding:4px 6px;text-align:right;border-bottom:1px solid #8883}th:first-child,td:first-child{text-align:left}
+</style></head><body>
+<h1>XAUUSD Live</h1>
+<div class="px" id="px">–</div><div class="mut" id="pxm">Prix Swissquote, rafraîchi chaque seconde</div>
+<div id="mf"></div>
+<h2>FastBull <span class="mut" id="fbm"></span></h2>
+<div class="bar"><div id="bl" style="background:var(--long)"></div><div id="bs" style="background:var(--short);flex:1;justify-content:flex-end"></div></div>
+<div class="grid"><div class="c"><span class="mut">Longs en gain</span><b id="lg">–</b></div><div class="c"><span class="mut">Shorts en gain</span><b id="sg">–</b></div></div>
+<h2>Niveaux principaux</h2>
+<table><thead><tr><th>Prix</th><th>Long %</th><th>Short %</th></tr></thead><tbody id="tb"></tbody></table>
+<script>
+const $=id=>document.getElementById(id),f=n=>n.toFixed(1)+' %',t=ms=>new Date(ms).toLocaleTimeString('fr-FR');
+let last=0;
+async function price(){try{const j=await (await fetch('/api/price')).json();const m=(j.bid+j.ask)/2;
+ $('px').textContent=m.toFixed(2);$('px').style.color=m>last?'var(--long)':m<last?'var(--short)':'';last=m;
+ $('pxm').textContent='Bid '+j.bid.toFixed(2)+' · Ask '+j.ask.toFixed(2)+' · '+t(Date.now());}catch(e){$('pxm').textContent='Prix indisponible'}}
+async function pos(){try{const j=await (await fetch('/api/positions')).json(),fb=j.fastbull,mf=j.myfxbook;
+ if(!fb.error){$('bl').style.width=fb.long+'%';$('bl').textContent='Long '+f(fb.long);$('bs').textContent='Short '+f(fb.short);
+  $('lg').textContent=f(fb.longWin);$('sg').textContent=f(fb.shortWin);$('fbm').textContent='· snapshot '+t(fb.updated)+' (toutes les 30 min)';
+  $('tb').innerHTML=fb.levels.map(r=>`<tr><td>${r[0].toFixed(2)}</td><td style="color:var(--long)">${r[1].toFixed(2)}</td><td style="color:var(--short)">${r[2].toFixed(2)}</td></tr>`).join('');}
+ $('mf').innerHTML=mf&&!mf.error?`<h2>Myfxbook <span class="mut">· ${t(mf.updated)}</span></h2><div class="bar"><div style="background:var(--long);width:${mf.long}%">Long ${f(mf.long)}</div><div style="background:var(--short);flex:1;justify-content:flex-end">Short ${f(mf.short)}</div></div><div class="mut">Prix moyen long ${mf.avgLong} · short ${mf.avgShort}</div>`
+  :`<p class="mut">Myfxbook : ${mf?mf.error:'non configuré (ajouter MYFXBOOK_EMAIL / MYFXBOOK_PASSWORD sur Vercel)'}</p>`;
+}catch(e){$('fbm').textContent='Erreur'}}
+price();pos();setInterval(price,1000);setInterval(pos,60000);
+</script></body></html>
