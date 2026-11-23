@@ -1,6 +1,15 @@
 // Serveur local sans dépendance : node dev.js → http://localhost:3000
 const http = require('http'), fs = require('fs'), path = require('path');
 const PORT = process.env.PORT || 3000;
+// Proxy d'entreprise : HTTPS_PROXY=http://proxy:port (nécessite `npm i undici`)
+const PROXY = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+if (PROXY) {
+  try {
+    const { setGlobalDispatcher, ProxyAgent } = require('undici');
+    setGlobalDispatcher(new ProxyAgent(PROXY));
+    console.log('Proxy :', PROXY);
+  } catch { console.error('Proxy défini mais undici absent : lancer `npm i undici`'); process.exit(1); }
+}
 http.createServer(async (req, res) => {
   const u = req.url.split('?')[0];
   if (u.startsWith('/api/')) {

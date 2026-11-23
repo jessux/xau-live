@@ -34,6 +34,16 @@ Windows (PowerShell) :
 $env:MYFXBOOK_EMAIL="ton@email"; $env:MYFXBOOK_PASSWORD="motdepasse"; node dev.js
 ```
 
+### Derrière un proxy d'entreprise (PowerShell)
+
+```powershell
+npm i undici
+$env:HTTPS_PROXY="http://proxy.entreprise:8080"; node dev.js
+```
+
+Adresse du proxy : `netsh winhttp show proxy`, ou demander au service informatique.
+Si le proxy demande un identifiant : `http://user:motdepasse@proxy:8080`.
+
 ### Vérifier les API
 
 - http://localhost:3000/api/price
