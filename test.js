@@ -107,3 +107,53 @@ for (const k in STRATS) {
   if (o.best) assert(o.best.train.pnl > 0 && o.best.test.pnl > 0 && o.best.train.n >= 3 && o.best.test.n >= 3);
 }
 console.log('ok', trades.length, 'trades');
+
+// Persistance du journal Binance : rechargement, ancien format et erreur de stockage.
+(async () => {
+  const vm = require('vm'), fs = require('fs');
+  const script = fs.readFileSync('binance.html', 'utf8').match(/<script>\s*([\s\S]*?)<\/script>/)[1];
+  const data = new Map(), storage = {
+    getItem: k => data.get(k) || null,
+    setItem: (k, v) => data.set(k, v),
+  };
+  function page() {
+    const els = {}, handlers = {};
+    const ctx = vm.createContext({
+      bnRule, bnBook, bnStats, localStorage: storage,
+      document: { getElementById: id => els[id] || (els[id] = {}) },
+      fetch: async () => ({ json: async () => ({ symbols: [{ symbol: 'BTCUSDT', filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.1' }] }] }) }),
+      WebSocket: class { close() {} },
+      setInterval: () => 1, clearInterval: () => {}, setTimeout: () => {},
+      addEventListener: (event, fn) => { handlers[event] = fn; }, confirm: () => true,
+    });
+    vm.runInContext(script, ctx);
+    return { ctx, els, handlers };
+  }
+  const first = page();
+  await vm.runInContext('start("BTCUSDT")', first.ctx);
+  vm.runInContext(`run.R.S.now = 1000;
+    for (let i = 0; i < 301; i++) {
+      run.R.S.ord.push({ kind: 'signal', limit: 1 });
+      run.R.trade({ t: 1000, p: 2, q: 1, m: false });
+    }`, first.ctx);
+  first.handlers.pagehide();
+  assert.strictEqual(JSON.parse(data.get('bn-BTCUSDT')).log.length, 301);
+
+  const second = page();
+  await vm.runInContext('start("BTCUSDT")', second.ctx);
+  assert.strictEqual(vm.runInContext('run.R.S.log.length', second.ctx), 301);
+  assert(second.els.log.innerHTML.includes('exécuté'));
+  second.els.rst.onclick();
+  assert.strictEqual(JSON.parse(data.get('bn-BTCUSDT')).log.length, 0);
+
+  data.set('bn-BTCUSDT', JSON.stringify({ done: [], n: {} }));
+  const legacy = page();
+  await vm.runInContext('start("BTCUSDT")', legacy.ctx);
+  assert.strictEqual(vm.runInContext('run.R.S.log.length', legacy.ctx), 0);
+  storage.setItem = () => { throw new Error('quota'); };
+  legacy.handlers.pagehide();
+  assert(legacy.els.storage.textContent.includes('quota'));
+  assert.strictEqual(vm.runInContext('stop()', legacy.ctx), false);
+  assert(vm.runInContext('run !== null', legacy.ctx));
+  console.log('ok persistance Binance');
+})().catch(e => { console.error(e); process.exitCode = 1; });

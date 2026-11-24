@@ -35,7 +35,7 @@ function bnRule(cfg = {}, rand = Math.random) {
     T: 0, L: 0, now: 0, h: [], tr: [], prev: null, since: {}, cand: [], trig: [], plan: [], ord: [], fill: [], done: [],
     d5: [], sizes: [], p95: 0, sec: 0, arm: -Infinity, log: [], n: { cascades: 0, manges: 0, retires: 0, ordres: 0, rejets: 0, executions: 0 },
   };
-  const log = (type, o = {}) => { S.log.unshift({ ts: S.now, type, ...o }); if (S.log.length > 300) S.log.pop(); };
+  const log = (type, o = {}) => { S.log.unshift({ ts: S.now, type, ...o }); };
   // Chute de cascade : 20 T, puis (après 10 min de données) 99e centile des baisses sur 5 s de la dernière heure
   const chute = () => S.d5.length >= 600 ? bnQ(S.d5.map(x => x[1]), 0.99) : c.chute * S.T;
   const round = x => +(Math.round(x / c.tick) * c.tick).toFixed(10);

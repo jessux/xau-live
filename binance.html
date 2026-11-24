@@ -20,6 +20,8 @@ cascade vendeuse depuis le plus haut des 10 s, puis gros bid du carnet local (di
 → vente limite post-only près du plus haut H, annulée après 120 s ou sans retour du prix. Exécutée seulement si un acheteur paie plus que la limite.
 2e patte : si le prix a été rejeté plus haut dans les 2 min avant la cascade (« il a pas été chercher à 57 »), seconde vente de 120 s sur ce sommet.
 Chaque ordre signal est doublé d'un ordre témoin à la même distance du prix, posé au hasard 3 à 13 min plus tard. Tourne tant que l'onglet est ouvert.</p>
+<p class="mut">Journal et ordres terminés sauvegardés dans ce navigateur, par symbole. Les ordres en cours ne sont pas repris après fermeture.</p>
+<p id="storage" role="status"></p>
 <div class="grid" id="etat"></div>
 <h2>Bilan signal / témoin <span class="mut">(bp, vente : &gt; 0 = gagnant)</span></h2><div class="wrap"><table id="bil"></table></div>
 <h2>En cours</h2><div class="wrap"><table id="cur"></table></div>
@@ -33,21 +35,37 @@ const cls = v => v == null ? '' : v > 0 ? 'pos' : 'neg', ty = o => o.patte ? o.k
 const tab = (head, rows) => `<tr>${head.map(h => `<th>${h}</th>`).join('')}</tr>` + rows.map(r => `<tr>${r.map(x => `<td>${x}</td>`).join('')}</tr>`).join('');
 let run = null;
 const key = () => 'bn-' + run.sym;
-const save = () => { if (run) try { localStorage.setItem(key(), JSON.stringify({ done: run.R.S.done, n: run.R.S.n })); } catch (e) {} };
+const save = () => {
+  if (!run) return true;
+  try {
+    localStorage.setItem(key(), JSON.stringify({ done: run.R.S.done, n: run.R.S.n, log: run.R.S.log }));
+    $('storage').textContent = '';
+    return true;
+  } catch (e) { $('storage').textContent = 'Sauvegarde de l’historique impossible : ' + e.message; return false; }
+};
 function stop() {
-  if (!run) return;
-  save(); clearInterval(run.iv); const ws = run.ws; run = null; ws.forEach(w => w.close());
+  if (!run) return true;
+  if (!save()) return false;
+  clearInterval(run.iv); const ws = run.ws; run = null; ws.forEach(w => w.close());
   $('go').textContent = 'Démarrer'; $('st').textContent = 'Arrêté';
+  return true;
 }
 async function start(sym) {
-  stop();
+  if (!stop()) return;
   $('st').textContent = 'Connexion…';
   try {
     const s = (await (await fetch(API + '/exchangeInfo')).json()).symbols.find(x => x.symbol === sym);
     if (!s) return $('st').textContent = 'Symbole inconnu';
+    let o;
+    try {
+      o = JSON.parse(localStorage.getItem('bn-' + sym));
+      if (o && (!Array.isArray(o.done) || !o.n || typeof o.n !== 'object' || (o.log != null && !Array.isArray(o.log)))) throw new Error('données invalides');
+    }
+    catch (e) { $('storage').textContent = 'Chargement de l’historique impossible : ' + e.message; $('st').textContent = 'Arrêté'; return; }
     const R = bnRule({ tick: +s.filters.find(x => x.filterType === 'PRICE_FILTER').tickSize }), B = bnBook();
     run = { sym, R, B, ws: [], k: 0, resync: 0 };
-    try { const o = JSON.parse(localStorage.getItem(key())); if (o) { R.S.done = o.done; Object.assign(R.S.n, o.n); } } catch (e) {}
+    if (o) { R.S.done = o.done; Object.assign(R.S.n, o.n); R.S.log = o.log || []; }
+    $('storage').textContent = '';
     const snap = async () => {
       try { if (B.snapshot(await (await fetch(`${API}/depth?symbol=${sym}&limit=1000`)).json()) === 'resync') setTimeout(snap, 1000); }
       catch (e) { setTimeout(snap, 3000); }
@@ -55,7 +73,7 @@ async function start(sym) {
     const open = (path, onmsg) => {
       const w = new WebSocket(`${WS}/${path}`);
       w.onmessage = m => onmsg(JSON.parse(m.data));
-      w.onclose = () => { if (run && run.R === R) { stop(); $('st').textContent = 'Flux coupé, reconnexion dans 5 s…'; setTimeout(() => !run && start(sym), 5000); } };
+      w.onclose = () => { if (run && run.R === R) { if (!stop()) { clearInterval(run.iv); $('st').textContent = 'Flux coupé'; return; } $('st').textContent = 'Flux coupé, reconnexion dans 5 s…'; setTimeout(() => !run && start(sym), 5000); } };
       return w;
     };
     const l = sym.toLowerCase();
@@ -64,6 +82,7 @@ async function start(sym) {
     run.ws[0].onopen = () => setTimeout(snap, 500);
     run.iv = setInterval(render, 1000);
     $('go').textContent = 'Arrêter';
+    render();
   } catch (e) { $('st').textContent = 'Binance injoignable : ' + e.message; }
 }
 function render() {
@@ -71,28 +90,30 @@ function render() {
   if (++run.k % 10 === 0) save();
   const { R, B } = run, S = R.S, T = S.T, L = S.L, bp = x => x / L * 1e4;
   $('st').textContent = B.live ? `En direct · ${run.sym} · ${B.bids.size + B.asks.size} niveaux en carnet · ${run.resync} resync` : 'Synchronisation du carnet…';
-  if (!T) return;
-  for (const [m, keep] of [[B.bids, p => p >= L * 0.98], [B.asks, p => p <= L * 1.02]]) for (const p of m.keys()) if (!keep(p)) m.delete(p); // niveaux lointains inutiles à la règle
-  const ch = R.chute(), big = Object.keys(S.since).map(b => f(b * T, 1)).join(', ') || 'aucun';
-  $('etat').innerHTML = [
-    `<div class="px">${f(L, 1)}</div><div class="mut">dernier prix</div>`,
-    `<b>T = ${f(T, 2)}</b> USDT (${f(bp(T), 2)} bp)<div class="mut">paquet ≈ 1 tick MNQ</div>`,
-    `<b>Cascade ≥ ${f(ch / T, 1)} T</b> (${f(bp(ch), 1)} bp) en 5 s<div class="mut">${S.d5.length >= 600 ? '99e centile 1 h' : `20 T, centile dans ${600 - S.d5.length} s`}</div>`,
-    `<b>Gros bid ≥ ${f(S.thr, 3)}</b><div class="mut">tenus : ${big}</div>`,
-    `cascades ${S.n.cascades} · mangés ${S.n.manges} · retirés ${S.n.retires}<div class="mut">ordres ${S.n.ordres} · rejetés ${S.n.rejets} · exécutés ${S.n.executions}</div>`,
-  ].map(x => `<div class="c">${x}</div>`).join('');
+  if (T) {
+    for (const [m, keep] of [[B.bids, p => p >= L * 0.98], [B.asks, p => p <= L * 1.02]]) for (const p of m.keys()) if (!keep(p)) m.delete(p); // niveaux lointains inutiles à la règle
+    const ch = R.chute(), big = Object.keys(S.since).map(b => f(b * T, 1)).join(', ') || 'aucun';
+    $('etat').innerHTML = [
+      `<div class="px">${f(L, 1)}</div><div class="mut">dernier prix</div>`,
+      `<b>T = ${f(T, 2)}</b> USDT (${f(bp(T), 2)} bp)<div class="mut">paquet ≈ 1 tick MNQ</div>`,
+      `<b>Cascade ≥ ${f(ch / T, 1)} T</b> (${f(bp(ch), 1)} bp) en 5 s<div class="mut">${S.d5.length >= 600 ? '99e centile 1 h' : `20 T, centile dans ${600 - S.d5.length} s`}</div>`,
+      `<b>Gros bid ≥ ${f(S.thr, 3)}</b><div class="mut">tenus : ${big}</div>`,
+      `cascades ${S.n.cascades} · mangés ${S.n.manges} · retirés ${S.n.retires}<div class="mut">ordres ${S.n.ordres} · rejetés ${S.n.rejets} · exécutés ${S.n.executions}</div>`,
+    ].map(x => `<div class="c">${x}</div>`).join('');
+  }
   const st = bnStats(S.done);
   $('bil').innerHTML = tab(['Type', 'Ordres', 'Exécutés', '+1 min', '+2 min', '+5 min', 'Meilleur', 'Pire'], Object.entries(st).map(([k, s]) =>
     [k, s.n, s.n ? `${s.exec} (${f(s.exec / s.n * 100, 0)} %)` : 0, ...['pnl1', 'pnl2', 'pnl5', 'mfe', 'mae'].map(x => `<span class="${cls(s[x])}">${f(s[x])}</span>`)]));
-  $('cur').innerHTML = tab(['Type', 'État', 'Heure', 'Limite', 'Écart (T)', 'Gain bp'], [
+  $('cur').innerHTML = tab(['Type', 'État', 'Heure', 'Limite', 'Écart (T)', 'Gain bp'], T ? [
     ...S.plan.map(p => [ty(p), 'prévu', hm(p.at), p.H ? `H ${f(p.H, 1)}` : '–', p.dist ? f(p.dist / T, 1) : '–', '–']),
     ...S.ord.map(o => [ty(o), 'posé', hm(o.pose), f(o.limit, 1), f(o.ecart, 1), '–']),
     ...S.fill.map(o => { const g = (o.limit - L) / o.limit * 1e4; return [ty(o), 'exécuté', hm(o.exec), f(o.limit, 1), f(o.ecart, 1), `<span class="${cls(g)}">${f(g)}</span>`]; }),
-  ]);
-  $('done').innerHTML = tab(['Type', 'Posé', 'Limite', 'Écart (T)', 'Statut', '+1 min', '+5 min', 'Meilleur', 'Pire'], S.done.slice(0, 50).map(o =>
+  ] : []);
+  $('done').innerHTML = tab(['Type', 'Posé', 'Limite', 'Écart (T)', 'Statut', '+1 min', '+5 min', 'Meilleur', 'Pire'], S.done.map(o =>
     [ty(o), hm(o.pose), f(o.limit, 1), f(o.ecart, 1), o.statut, ...['pnl1', 'pnl5', 'mfe', 'mae'].map(x => `<span class="${cls(o[x])}">${f(o[x])}</span>`)]));
-  $('log').innerHTML = tab(['Heure', 'Événement', 'Détail'], S.log.slice(0, 50).map(e =>
-    [hm(e.ts), e.type, [e.kind, e.prix != null && `prix ${f(e.prix, 1)}`, e.q != null && `file ${f(e.q, 3)}`, e.vendu != null && `vendu ${f(e.vendu, 3)}`,
+  // ponytail: rendu complet et localStorage limités en volume ; passer à IndexedDB et paginer pour les longs historiques.
+  $('log').innerHTML = tab(['Date et heure', 'Événement', 'Détail'], S.log.map(e =>
+    [new Date(e.ts).toLocaleString('fr-FR'), e.type, [e.kind, e.prix != null && `prix ${f(e.prix, 1)}`, e.q != null && `file ${f(e.q, 3)}`, e.vendu != null && `vendu ${f(e.vendu, 3)}`,
       e.H != null && `H ${f(e.H, 1)}`, e.limit != null && `limite ${f(e.limit, 1)}`].filter(Boolean).join(' · ')]));
 }
 $('go').onclick = () => run ? stop() : start($('sym').value.trim().toUpperCase());
@@ -103,7 +124,7 @@ $('csv').onclick = () => {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `acheteur-mange-${run.sym}.csv`; a.click();
 };
-$('rst').onclick = () => { if (run && confirm('Vider les ordres terminés et les compteurs ?')) { localStorage.removeItem(key()); run.R.S.done = []; for (const k in run.R.S.n) run.R.S.n[k] = 0; render(); } };
+$('rst').onclick = () => { if (run && confirm('Vider le journal, les ordres terminés et les compteurs ?')) { run.R.S.done = []; run.R.S.log = []; for (const k in run.R.S.n) run.R.S.n[k] = 0; save(); render(); } };
 addEventListener('pagehide', save);
 </script>
 </body></html>
