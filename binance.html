@@ -18,6 +18,7 @@ td,th{padding:4px 6px;text-align:right;border-bottom:1px solid #8883;white-space
 <p class="mut">Règle candidate de trading-carnet/strategie/SYNTHESE_SIGNAL.md (2 cas sur MNQ, non validée), vente seule, sans argent :
 cascade vendeuse depuis le plus haut des 10 s, puis gros bid du carnet local (diff depth@100ms + instantané) mangé par des ventes réelles (aggTrade)
 → vente limite post-only près du plus haut H, annulée après 120 s ou sans retour du prix. Exécutée seulement si un acheteur paie plus que la limite.
+2e patte : si le prix a été rejeté plus haut dans les 2 min avant la cascade (« il a pas été chercher à 57 »), seconde vente de 120 s sur ce sommet.
 Chaque ordre signal est doublé d'un ordre témoin à la même distance du prix, posé au hasard 3 à 13 min plus tard. Tourne tant que l'onglet est ouvert.</p>
 <div class="grid" id="etat"></div>
 <h2>Bilan signal / témoin <span class="mut">(bp, vente : &gt; 0 = gagnant)</span></h2><div class="wrap"><table id="bil"></table></div>
@@ -28,7 +29,7 @@ Chaque ordre signal est doublé d'un ordre témoin à la même distance du prix,
 <script>
 const $ = id => document.getElementById(id), API = 'https://fapi.binance.com/fapi/v1', WS = 'wss://fstream.binance.com';
 const hm = ts => ts ? new Date(ts).toLocaleTimeString('fr-FR') : '–', f = (v, d = 2) => v == null ? '–' : (+v).toFixed(d);
-const cls = v => v == null ? '' : v > 0 ? 'pos' : 'neg';
+const cls = v => v == null ? '' : v > 0 ? 'pos' : 'neg', ty = o => o.patte ? o.kind + ' 2e patte' : o.kind;
 const tab = (head, rows) => `<tr>${head.map(h => `<th>${h}</th>`).join('')}</tr>` + rows.map(r => `<tr>${r.map(x => `<td>${x}</td>`).join('')}</tr>`).join('');
 let run = null;
 const key = () => 'bn-' + run.sym;
@@ -84,12 +85,12 @@ function render() {
   $('bil').innerHTML = tab(['Type', 'Ordres', 'Exécutés', '+1 min', '+2 min', '+5 min', 'Meilleur', 'Pire'], Object.entries(st).map(([k, s]) =>
     [k, s.n, s.n ? `${s.exec} (${f(s.exec / s.n * 100, 0)} %)` : 0, ...['pnl1', 'pnl2', 'pnl5', 'mfe', 'mae'].map(x => `<span class="${cls(s[x])}">${f(s[x])}</span>`)]));
   $('cur').innerHTML = tab(['Type', 'État', 'Heure', 'Limite', 'Écart (T)', 'Gain bp'], [
-    ...S.plan.map(p => [p.kind, 'prévu', hm(p.at), p.H ? `H ${f(p.H, 1)}` : '–', p.dist ? f(p.dist / T, 1) : '–', '–']),
-    ...S.ord.map(o => [o.kind, 'posé', hm(o.pose), f(o.limit, 1), f(o.ecart, 1), '–']),
-    ...S.fill.map(o => { const g = (o.limit - L) / o.limit * 1e4; return [o.kind, 'exécuté', hm(o.exec), f(o.limit, 1), f(o.ecart, 1), `<span class="${cls(g)}">${f(g)}</span>`]; }),
+    ...S.plan.map(p => [ty(p), 'prévu', hm(p.at), p.H ? `H ${f(p.H, 1)}` : '–', p.dist ? f(p.dist / T, 1) : '–', '–']),
+    ...S.ord.map(o => [ty(o), 'posé', hm(o.pose), f(o.limit, 1), f(o.ecart, 1), '–']),
+    ...S.fill.map(o => { const g = (o.limit - L) / o.limit * 1e4; return [ty(o), 'exécuté', hm(o.exec), f(o.limit, 1), f(o.ecart, 1), `<span class="${cls(g)}">${f(g)}</span>`]; }),
   ]);
   $('done').innerHTML = tab(['Type', 'Posé', 'Limite', 'Écart (T)', 'Statut', '+1 min', '+5 min', 'Meilleur', 'Pire'], S.done.slice(0, 50).map(o =>
-    [o.kind, hm(o.pose), f(o.limit, 1), f(o.ecart, 1), o.statut, ...['pnl1', 'pnl5', 'mfe', 'mae'].map(x => `<span class="${cls(o[x])}">${f(o[x])}</span>`)]));
+    [ty(o), hm(o.pose), f(o.limit, 1), f(o.ecart, 1), o.statut, ...['pnl1', 'pnl5', 'mfe', 'mae'].map(x => `<span class="${cls(o[x])}">${f(o[x])}</span>`)]));
   $('log').innerHTML = tab(['Heure', 'Événement', 'Détail'], S.log.slice(0, 50).map(e =>
     [hm(e.ts), e.type, [e.kind, e.prix != null && `prix ${f(e.prix, 1)}`, e.q != null && `file ${f(e.q, 3)}`, e.vendu != null && `vendu ${f(e.vendu, 3)}`,
       e.H != null && `H ${f(e.H, 1)}`, e.limit != null && `limite ${f(e.limit, 1)}`].filter(Boolean).join(' · ')]));
@@ -97,7 +98,7 @@ function render() {
 $('go').onclick = () => run ? stop() : start($('sym').value.trim().toUpperCase());
 $('csv').onclick = () => {
   if (!run) return;
-  const cols = ['kind', 'pose', 'limit', 'ecart', 'L', 'statut', 'exec', 'pnl1', 'pnl2', 'pnl5', 'mfe', 'mae', 'fin'];
+  const cols = ['kind', 'patte', 'pose', 'limit', 'ecart', 'L', 'statut', 'exec', 'pnl1', 'pnl2', 'pnl5', 'mfe', 'mae', 'fin'];
   const csv = [cols.join(';'), ...run.R.S.done.map(o => cols.map(c => o[c] ?? '').join(';'))].join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `acheteur-mange-${run.sym}.csv`; a.click();

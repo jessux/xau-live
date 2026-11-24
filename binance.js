@@ -3,7 +3,7 @@
 // binance.html branche les flux, `node test.js` vérifie. Prix en paquets T ≈ 0,1 bp (≈ 1 tick MNQ), seuils du document en T.
 const BN_DEF = {
   tick: 0.1, bp: 0.1, chute: 20, tol: 1, hold: 2000, near: 12, ratio: 2.5, pct: 0.95, reste: 0.3, exec: 0.7, niveaux: 3, total: 1.6,
-  delai: 2000, bande: [-5, 2], rond: 20, ttl: 120000, retour: 8, retourMs: 60000,
+  delai: 2000, bande: [-5, 2], rond: 20, ttl: 120000, retour: 8, retourMs: 60000, sommet: 120000,
 };
 const bnQ = (a, p) => { if (!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 
@@ -44,9 +44,9 @@ function bnRule(cfg = {}, rand = Math.random) {
     const T = S.T, m = Math.ceil((p.H + c.bande[0] * T) / (c.rond * T)) * c.rond * T;
     const limit = round(p.kind === 'signal' ? (m <= p.H + c.bande[1] * T ? m - T : p.H) : S.L + p.dist);
     if (limit <= bb) { if (p.kind === 'signal') S.n.rejets++; return log('rejeté (post-only)', { kind: p.kind, limit }); }
-    S.ord.push({ kind: p.kind, pose: S.now, limit, ecart: (limit - S.L) / T, L: S.L, max: S.L });
+    S.ord.push({ kind: p.kind, patte: p.patte, pose: S.now, limit, ecart: (limit - S.L) / T, L: S.L, max: S.L });
     log('ordre', { kind: p.kind, limit });
-    if (p.kind === 'signal') { S.n.ordres++; S.plan.push({ kind: 'témoin', at: S.now + (3 + 10 * rand()) * 60000, dist: limit - S.L }); }
+    if (p.kind === 'signal') { S.n.ordres++; S.plan.push({ kind: 'témoin', patte: p.patte, at: S.now + (3 + 10 * rand()) * 60000, dist: limit - S.L }); }
   };
   return {
     S, c, chute,
@@ -69,7 +69,7 @@ function bnRule(cfg = {}, rand = Math.random) {
       if (!S.L) S.L = (bb + ba) / 2;
       const T = S.T, top = Math.floor(bb / T), lo = Math.min(top, S.prev ? S.prev.top : top) - c.near - 3;
       S.h.push([ts, S.L]);
-      while (S.h[0][0] < ts - 40000) S.h.shift();
+      while (S.h[0][0] < ts - c.sommet - 40000) S.h.shift();
       const cur = new Map(), near = [];
       for (const [p, v] of B.bids) { const b = Math.floor(p / T); if (b >= lo) cur.set(b, (cur.get(b) || 0) + v); }
       for (let b = top - c.near; b <= top; b++) if (cur.get(b)) near.push(cur.get(b));
@@ -95,11 +95,19 @@ function bnRule(cfg = {}, rand = Math.random) {
         return false;
       });
 
-      // Déclencheur + cascade armée dans les 15 s avant lui (sa chute peut finir jusqu'à 5 s après)
+      // Déclencheur + cascade armée dans les 15 s avant lui (sa chute peut finir jusqu'à 5 s après).
+      // 2e patte (§A.3, 35:20 « il a pas été chercher à 57 ») : sommet P rejeté plus haut dans les 2 min avant la cascade
+      // → seconde vente de 2 min placée sur P avec la même règle que sur H.
       S.trig = S.trig.filter(g => {
         const a = casc(S.h, g.t, { chute: chute(), tol: c.tol * T });
         if (a) {
-          if (!S.ord.some(o => o.kind === 'signal') && !S.plan.some(p => p.kind === 'signal')) S.plan.push({ kind: 'signal', at: Math.max(g.t + c.delai, ts), H: a.H });
+          let P = -Infinity;
+          for (const [t, p] of S.h) if (t >= a.t0 - c.sommet && t <= a.t0) P = Math.max(P, p);
+          if (!S.ord.some(o => o.kind === 'signal') && !S.plan.some(p => p.kind === 'signal')) {
+            const at = Math.max(g.t + c.delai, ts);
+            S.plan.push({ kind: 'signal', at, H: a.H });
+            if (P > a.H + c.bande[1] * T) S.plan.push({ kind: 'signal', patte: 2, at, H: P });
+          }
           log('signal', { H: a.H });
           return false;
         }
@@ -138,11 +146,11 @@ function bnRule(cfg = {}, rand = Math.random) {
   };
 }
 
-// Bilan par type d'ordre : exécutés et moyennes en bp (vente : > 0 = gagnant) à +1 / +2 / +5 min, meilleur / pire écart.
-const bnStats = done => Object.fromEntries(['signal', 'témoin'].map(k => {
-  const d = done.filter(o => o.kind === k), x = d.filter(o => o.statut === 'exécuté');
+// Bilan par type d'ordre et par patte : exécutés et moyennes en bp (vente : > 0 = gagnant) à +1 / +2 / +5 min, meilleur / pire écart.
+const bnStats = done => Object.fromEntries(['signal', 'témoin'].flatMap(k => [[k, 1], [k, 2]]).map(([k, n]) => {
+  const d = done.filter(o => o.kind === k && (o.patte || 1) === n), x = d.filter(o => o.statut === 'exécuté');
   const m = f => x.length ? x.reduce((a, o) => a + o[f], 0) / x.length : null;
-  return [k, { n: d.length, exec: x.length, pnl1: m('pnl1'), pnl2: m('pnl2'), pnl5: m('pnl5'), mfe: m('mfe'), mae: m('mae') }];
+  return [n > 1 ? k + ' 2e patte' : k, { n: d.length, exec: x.length, pnl1: m('pnl1'), pnl2: m('pnl2'), pnl5: m('pnl5'), mfe: m('mfe'), mae: m('mae') }];
 }));
 
 if (typeof module !== 'undefined') module.exports = { bnBook, bnRule, bnStats };

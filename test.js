@@ -52,7 +52,7 @@ run3([3699.7], null);
 assert(!E3.S.ord.mange && !E3.S.pos.mange);
 
 // Binance : carnet local (instantané + diffs, trou de séquence → resync)
-const { bnBook, bnRule } = require('./binance.js');
+const { bnBook, bnRule, bnStats } = require('./binance.js');
 const BK = bnBook();
 assert.strictEqual(BK.diff({ U: 90, u: 95, pu: 89, b: [], a: [] }), false);
 assert.strictEqual(BK.snapshot({ lastUpdateId: 100, bids: [['10', '1']], asks: [['11', '1']] }), undefined);
@@ -64,18 +64,21 @@ assert.strictEqual(BK.diff({ U: 112, u: 115, pu: 111, b: [], a: [] }), 'resync')
 // Binance : gros bid (10 contre 1) à 99990.5 tenu 3 s, balayé par des ventes pendant une chute de 21 T depuis 100000
 // → vente limite à 99999 (multiple de 20 T dans [H − 5 ; H + 2], moins 1 T), exécutée, bilan à +5 min ; témoin sans retour.
 // Même scénario sans transactions = bid retiré : aucun ordre.
-function scen(sweep) {
+// Précédé d'un sommet rejeté à 100030 (redescente de 3 T/s, sans cascade) → 2e patte : seconde vente à 100030, sans retour.
+function scen(sweep, top) {
   const R = bnRule({ tick: 0.1 }, () => 0), bids = new Map(), B = { bids, asks: new Map([[100000.5, 1]]) };
   for (let i = 0; i < 13; i++) bids.set(99999.5 - i, i === 9 ? 10 : 1);
   let t = 1000;
   const steps = to => { for (; t <= to; t += 100) R.step(B, t); };
-  R.trade({ t, p: 100000, q: .1, m: false }); steps(4000);
+  if (top) { for (let p = top; p >= 100000; p -= 3) { R.trade({ t, p, q: .1, m: false }); steps(t + 900); } steps(t + 10900); }
+  const o = t - 1000;
+  R.trade({ t, p: 100000, q: .1, m: false }); steps(o + 4000);
   for (let i = 0; i < 10; i++) bids.delete(99999.5 - i);
-  if (sweep) for (let i = 0; i < 10; i++) R.trade({ t: 4050, p: 99999.5 - i, q: i === 9 ? 10 : 1, m: true });
-  steps(4400);
-  R.trade({ t: 4450, p: 99979, q: 1, m: true }); steps(20000);
-  R.trade({ t: 20050, p: 99999.5, q: 1, m: false });
-  R.trade({ t: 20060, p: 99989, q: 1, m: true }); steps(330000);
+  if (sweep) for (let i = 0; i < 10; i++) R.trade({ t: o + 4050, p: 99999.5 - i, q: i === 9 ? 10 : 1, m: true });
+  steps(o + 4400);
+  R.trade({ t: o + 4450, p: 99979, q: 1, m: true }); steps(o + 20000);
+  R.trade({ t: o + 20050, p: 99999.5, q: 1, m: false });
+  R.trade({ t: o + 20060, p: 99989, q: 1, m: true }); steps(o + 330000);
   return R;
 }
 const R1 = scen(true), sig = R1.S.done.find(o => o.kind === 'signal'), tem = R1.S.done.find(o => o.kind === 'témoin');
@@ -88,6 +91,11 @@ assert.strictEqual(tem.limit, 100009);
 assert.strictEqual(tem.statut, 'pas de retour');
 const R2 = scen(false);
 assert.deepStrictEqual([R2.S.n.retires, R2.S.n.manges, R2.S.done.length], [1, 0, 0]);
+const R3 = scen(true, 100030), pt2 = R3.S.done.filter(o => o.patte === 2);
+assert.deepStrictEqual([R3.S.n.cascades, R3.S.n.ordres, R3.S.n.executions], [1, 2, 1]);
+assert.strictEqual(R3.S.done.find(o => o.kind === 'signal' && !o.patte).statut, 'exécuté');
+assert.deepStrictEqual(pt2.map(o => [o.kind, o.limit, o.statut]).sort(), [['signal', 100030, 'pas de retour'], ['témoin', 100040, 'pas de retour']]);
+assert.strictEqual(bnStats(R3.S.done)['signal 2e patte'].n, 1);
 
 // Optimiseur : 1 h de sinusoïde. Le cache de zones ne change pas les résultats ; un réglage proposé gagne sur les deux moitiés.
 const S = [];
