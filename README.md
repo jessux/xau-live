@@ -7,7 +7,7 @@ Prix de l'or en direct (Swissquote, 1 s, secours gold-api.com), uniquement des d
   (sql.js, dans le navigateur, sauvegardée dans IndexedDB), rejeu de l'historique avec d'autres paramètres, console SQL, export `.sqlite`.
 - **`/binance.html`** : règle candidate « acheteur défensif mangé » ([trading-carnet/strategie/SYNTHESE_SIGNAL.md](https://github.com/jessux/trading-carnet/blob/main/strategie/SYNTHESE_SIGNAL.md)) en papier sur Binance USDⓈ-M Futures :
   carnet local complet (diff `depth@100ms` + instantané REST) et `aggTrade`, ventes limites simulées comparées à des ordres témoins posés au hasard, export CSV.
-  Tourne tant que l'onglet est ouvert. Le journal et les ordres terminés sont sauvegardés par symbole dans le navigateur et rechargés au démarrage ;
+  Tourne tant que l'onglet est ouvert. Le journal et les ordres terminés sont sauvegardés par symbole dans le navigateur et affichés dès l'ouverture, sans connexion à Binance ;
   les ordres en cours ne sont pas repris après fermeture.
 
 ## Tester en local
@@ -36,6 +36,8 @@ Si le proxy demande un identifiant : `http://user:motdepasse@proxy:8080`.
 ### Vérifier les API
 
 - http://localhost:3000/api/price
+
+Sur `/scalp.html`, « Prix indisponible » signifie qu'aucune cotation valide n'a été reçue ; aucun tick n'est enregistré dans ce cas.
 
 ## Déployer sur Vercel
 

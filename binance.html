@@ -20,7 +20,7 @@ cascade vendeuse depuis le plus haut des 10 s, puis gros bid du carnet local (di
 → vente limite post-only près du plus haut H, annulée après 120 s ou sans retour du prix. Exécutée seulement si un acheteur paie plus que la limite.
 2e patte : si le prix a été rejeté plus haut dans les 2 min avant la cascade (« il a pas été chercher à 57 »), seconde vente de 120 s sur ce sommet.
 Chaque ordre signal est doublé d'un ordre témoin à la même distance du prix, posé au hasard 3 à 13 min plus tard. Tourne tant que l'onglet est ouvert.</p>
-<p class="mut">Journal et ordres terminés sauvegardés dans ce navigateur, par symbole. Les ordres en cours ne sont pas repris après fermeture.</p>
+<p class="mut">Le journal et les ordres terminés sont rechargés à l’ouverture pour le dernier symbole sauvegardé, même sans connexion à Binance. Les ordres en cours ne sont pas repris.</p>
 <p id="storage" role="status"></p>
 <div class="grid" id="etat"></div>
 <h2>Bilan signal / témoin <span class="mut">(bp, vente : &gt; 0 = gagnant)</span></h2><div class="wrap"><table id="bil"></table></div>
@@ -34,11 +34,23 @@ const hm = ts => ts ? new Date(ts).toLocaleTimeString('fr-FR') : '–', f = (v, 
 const cls = v => v == null ? '' : v > 0 ? 'pos' : 'neg', ty = o => o.patte ? o.kind + ' 2e patte' : o.kind;
 const tab = (head, rows) => `<tr>${head.map(h => `<th>${h}</th>`).join('')}</tr>` + rows.map(r => `<tr>${r.map(x => `<td>${x}</td>`).join('')}</tr>`).join('');
 let run = null;
-const key = () => 'bn-' + run.sym;
+const key = sym => 'bn-' + sym, symbol = () => $('sym').value.trim().toUpperCase();
+function loadHistory(sym) {
+  const o = JSON.parse(localStorage.getItem(key(sym)));
+  if (o && (!Array.isArray(o.done) || !o.n || typeof o.n !== 'object' || (o.log != null && !Array.isArray(o.log)))) throw new Error('données invalides');
+  $('storage').textContent = '';
+  return { done: o?.done ?? [], n: o?.n ?? {}, log: o?.log ?? [] };
+}
+function showSavedHistory() {
+  try { renderHistory(loadHistory(symbol())); }
+  catch (e) { $('storage').textContent = 'Chargement de l’historique impossible : ' + e.message; }
+}
 const save = () => {
   if (!run) return true;
   try {
-    localStorage.setItem(key(), JSON.stringify({ done: run.R.S.done, n: run.R.S.n, log: run.R.S.log }));
+    const { done, n, log } = run.R.S;
+    localStorage.setItem(key(run.sym), JSON.stringify({ done, n, log }));
+    localStorage.setItem('bn-last-symbol', run.sym);
     $('storage').textContent = '';
     return true;
   } catch (e) { $('storage').textContent = 'Sauvegarde de l’historique impossible : ' + e.message; return false; }
@@ -52,19 +64,16 @@ function stop() {
 }
 async function start(sym) {
   if (!stop()) return;
+  let o;
+  try { o = loadHistory(sym); renderHistory(o); }
+  catch (e) { $('storage').textContent = 'Chargement de l’historique impossible : ' + e.message; return; }
   $('st').textContent = 'Connexion…';
   try {
     const s = (await (await fetch(API + '/exchangeInfo')).json()).symbols.find(x => x.symbol === sym);
     if (!s) return $('st').textContent = 'Symbole inconnu';
-    let o;
-    try {
-      o = JSON.parse(localStorage.getItem('bn-' + sym));
-      if (o && (!Array.isArray(o.done) || !o.n || typeof o.n !== 'object' || (o.log != null && !Array.isArray(o.log)))) throw new Error('données invalides');
-    }
-    catch (e) { $('storage').textContent = 'Chargement de l’historique impossible : ' + e.message; $('st').textContent = 'Arrêté'; return; }
     const R = bnRule({ tick: +s.filters.find(x => x.filterType === 'PRICE_FILTER').tickSize }), B = bnBook();
     run = { sym, R, B, ws: [], k: 0, resync: 0 };
-    if (o) { R.S.done = o.done; Object.assign(R.S.n, o.n); R.S.log = o.log || []; }
+    R.S.done = o.done; Object.assign(R.S.n, o.n); R.S.log = o.log;
     $('storage').textContent = '';
     const snap = async () => {
       try { if (B.snapshot(await (await fetch(`${API}/depth?symbol=${sym}&limit=1000`)).json()) === 'resync') setTimeout(snap, 1000); }
@@ -101,14 +110,17 @@ function render() {
       `cascades ${S.n.cascades} · mangés ${S.n.manges} · retirés ${S.n.retires}<div class="mut">ordres ${S.n.ordres} · rejetés ${S.n.rejets} · exécutés ${S.n.executions}</div>`,
     ].map(x => `<div class="c">${x}</div>`).join('');
   }
-  const st = bnStats(S.done);
-  $('bil').innerHTML = tab(['Type', 'Ordres', 'Exécutés', '+1 min', '+2 min', '+5 min', 'Meilleur', 'Pire'], Object.entries(st).map(([k, s]) =>
-    [k, s.n, s.n ? `${s.exec} (${f(s.exec / s.n * 100, 0)} %)` : 0, ...['pnl1', 'pnl2', 'pnl5', 'mfe', 'mae'].map(x => `<span class="${cls(s[x])}">${f(s[x])}</span>`)]));
   $('cur').innerHTML = tab(['Type', 'État', 'Heure', 'Limite', 'Écart (T)', 'Gain bp'], T ? [
     ...S.plan.map(p => [ty(p), 'prévu', hm(p.at), p.H ? `H ${f(p.H, 1)}` : '–', p.dist ? f(p.dist / T, 1) : '–', '–']),
     ...S.ord.map(o => [ty(o), 'posé', hm(o.pose), f(o.limit, 1), f(o.ecart, 1), '–']),
     ...S.fill.map(o => { const g = (o.limit - L) / o.limit * 1e4; return [ty(o), 'exécuté', hm(o.exec), f(o.limit, 1), f(o.ecart, 1), `<span class="${cls(g)}">${f(g)}</span>`]; }),
   ] : []);
+  renderHistory(S);
+}
+function renderHistory(S) {
+  const st = bnStats(S.done);
+  $('bil').innerHTML = tab(['Type', 'Ordres', 'Exécutés', '+1 min', '+2 min', '+5 min', 'Meilleur', 'Pire'], Object.entries(st).map(([k, s]) =>
+    [k, s.n, s.n ? `${s.exec} (${f(s.exec / s.n * 100, 0)} %)` : 0, ...['pnl1', 'pnl2', 'pnl5', 'mfe', 'mae'].map(x => `<span class="${cls(s[x])}">${f(s[x])}</span>`)]));
   $('done').innerHTML = tab(['Type', 'Posé', 'Limite', 'Écart (T)', 'Statut', '+1 min', '+5 min', 'Meilleur', 'Pire'], S.done.map(o =>
     [ty(o), hm(o.pose), f(o.limit, 1), f(o.ecart, 1), o.statut, ...['pnl1', 'pnl5', 'mfe', 'mae'].map(x => `<span class="${cls(o[x])}">${f(o[x])}</span>`)]));
   // ponytail: rendu complet et localStorage limités en volume ; passer à IndexedDB et paginer pour les longs historiques.
@@ -116,7 +128,8 @@ function render() {
     [new Date(e.ts).toLocaleString('fr-FR'), e.type, [e.kind, e.prix != null && `prix ${f(e.prix, 1)}`, e.q != null && `file ${f(e.q, 3)}`, e.vendu != null && `vendu ${f(e.vendu, 3)}`,
       e.H != null && `H ${f(e.H, 1)}`, e.limit != null && `limite ${f(e.limit, 1)}`].filter(Boolean).join(' · ')]));
 }
-$('go').onclick = () => run ? stop() : start($('sym').value.trim().toUpperCase());
+$('go').onclick = () => run ? stop() : start(symbol());
+$('sym').onchange = () => { if (!run) showSavedHistory(); };
 $('csv').onclick = () => {
   if (!run) return;
   const cols = ['kind', 'patte', 'pose', 'limit', 'ecart', 'L', 'statut', 'exec', 'pnl1', 'pnl2', 'pnl5', 'mfe', 'mae', 'fin'];
@@ -126,5 +139,10 @@ $('csv').onclick = () => {
 };
 $('rst').onclick = () => { if (run && confirm('Vider le journal, les ordres terminés et les compteurs ?')) { run.R.S.done = []; run.R.S.log = []; for (const k in run.R.S.n) run.R.S.n[k] = 0; save(); render(); } };
 addEventListener('pagehide', save);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') save(); });
+try {
+  $('sym').value = localStorage.getItem('bn-last-symbol') || $('sym').value;
+  showSavedHistory();
+} catch (e) { $('storage').textContent = 'Chargement de l’historique impossible : ' + e.message; }
 </script>
 </body></html>

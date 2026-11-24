@@ -108,6 +108,21 @@ for (const k in STRATS) {
 }
 console.log('ok', trades.length, 'trades');
 
+// Une erreur de cotation n'affiche pas NaN et n'entre pas dans l'historique Scalp.
+(async () => {
+  const { readFileSync } = require('fs'), { runInNewContext } = require('vm');
+  const html = readFileSync(require('path').join(__dirname, 'scalp.html'), 'utf8');
+  const script = html.slice(html.indexOf('async function poll()'), html.indexOf('// --- Rejeu'));
+  const els = { px: {}, pxm: {} };
+  await runInNewContext(`${script}\npoll()`, {
+    $: id => els[id], document: {},
+    fetch: async () => ({ json: async () => ({ error: 'ENOTFOUND' }) }),
+    run: () => assert.fail('Cotation invalide enregistrée'),
+  });
+  assert.strictEqual(els.px.textContent, '—');
+  assert.strictEqual(els.pxm.textContent, 'Prix indisponible');
+})().catch(e => { console.error(e); process.exitCode = 1; });
+
 // Persistance du journal Binance : rechargement, ancien format et erreur de stockage.
 (async () => {
   const vm = require('vm'), fs = require('fs');
@@ -116,35 +131,55 @@ console.log('ok', trades.length, 'trades');
     getItem: k => data.get(k) || null,
     setItem: (k, v) => data.set(k, v),
   };
-  function page() {
-    const els = {}, handlers = {};
+  function page(offline = false) {
+    const els = { sym: { value: 'BTCUSDT' } }, handlers = {};
+    const document = {
+      getElementById: id => els[id] || (els[id] = {}),
+      addEventListener: (event, fn) => { handlers[event] = fn; },
+      visibilityState: 'visible',
+    };
     const ctx = vm.createContext({
       bnRule, bnBook, bnStats, localStorage: storage,
-      document: { getElementById: id => els[id] || (els[id] = {}) },
-      fetch: async () => ({ json: async () => ({ symbols: [{ symbol: 'BTCUSDT', filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.1' }] }] }) }),
+      document,
+      fetch: async () => {
+        if (offline) throw new Error('hors ligne');
+        return { json: async () => ({ symbols: ['BTCUSDT', 'ETHUSDT'].map(symbol => ({ symbol, filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.1' }] })) }) };
+      },
       WebSocket: class { close() {} },
       setInterval: () => 1, clearInterval: () => {}, setTimeout: () => {},
       addEventListener: (event, fn) => { handlers[event] = fn; }, confirm: () => true,
     });
     vm.runInContext(script, ctx);
-    return { ctx, els, handlers };
+    return { ctx, els, handlers, document };
   }
   const first = page();
-  await vm.runInContext('start("BTCUSDT")', first.ctx);
+  await vm.runInContext('start("ETHUSDT")', first.ctx);
   vm.runInContext(`run.R.S.now = 1000;
     for (let i = 0; i < 301; i++) {
       run.R.S.ord.push({ kind: 'signal', limit: 1 });
       run.R.trade({ t: 1000, p: 2, q: 1, m: false });
     }`, first.ctx);
-  first.handlers.pagehide();
-  assert.strictEqual(JSON.parse(data.get('bn-BTCUSDT')).log.length, 301);
+  first.document.visibilityState = 'hidden';
+  first.handlers.visibilitychange();
+  assert.strictEqual(JSON.parse(data.get('bn-ETHUSDT')).log.length, 301);
+
+  const offline = page(true);
+  assert.strictEqual(offline.els.sym.value, 'ETHUSDT');
+  assert.strictEqual(vm.runInContext('run', offline.ctx), null);
+  assert(offline.els.log.innerHTML.includes('exécuté'));
+  await vm.runInContext('start("ETHUSDT")', offline.ctx);
+  assert(offline.els.st.textContent.includes('hors ligne'));
+  assert(offline.els.log.innerHTML.includes('exécuté'));
+  offline.els.sym.value = 'BTCUSDT';
+  offline.els.sym.onchange();
+  assert(!offline.els.log.innerHTML.includes('exécuté'));
 
   const second = page();
-  await vm.runInContext('start("BTCUSDT")', second.ctx);
+  await vm.runInContext('start("ETHUSDT")', second.ctx);
   assert.strictEqual(vm.runInContext('run.R.S.log.length', second.ctx), 301);
   assert(second.els.log.innerHTML.includes('exécuté'));
   second.els.rst.onclick();
-  assert.strictEqual(JSON.parse(data.get('bn-BTCUSDT')).log.length, 0);
+  assert.strictEqual(JSON.parse(data.get('bn-ETHUSDT')).log.length, 0);
 
   data.set('bn-BTCUSDT', JSON.stringify({ done: [], n: {} }));
   const legacy = page();
