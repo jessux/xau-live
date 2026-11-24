@@ -23,7 +23,27 @@ function zones(ticks, price, win = 2, merge = 1.5) {
   return out.map(z => ({ lo: z.lo - .3, hi: z.hi + .3, n: z.n, side: (z.lo + z.hi) / 2 < price ? 'buy' : 'sell' }));
 }
 
-// Stratégies : signal(ctx, params) → 'buy' | 'sell' | undefined. ctx = { h: [[ts, mid]], zones, mid, prev }
+// Cascade (strategie/SYNTHESE_SIGNAL.md, A) : armée à t0 ∈ [t − ttl, t] si le prix y est à ≤ tol du plus haut des `hi` ms
+// précédentes, puis chute d'au moins `chute` en ≤ `dur` ms (la chute peut finir après t). h = [[ts, prix], ...] trié.
+// → { H (plus haut), t0 } pour le t0 le plus récent, ou null.
+function cascade(h, t, { chute, tol = 0, hi = 10000, dur = 5000, ttl = 15000 }) {
+  let i = h.length;
+  while (i > 0 && h[i - 1][0] >= t - ttl - hi) i--;
+  const w = h.slice(i);
+  for (let k = w.length - 1; k >= 0; k--) {
+    if (w[k][0] > t) continue;
+    if (w[k][0] < t - ttl) break;
+    let lo = Infinity, H = -Infinity;
+    for (let j = k + 1; j < w.length && w[j][0] - w[k][0] <= dur; j++) lo = Math.min(lo, w[j][1]);
+    if (w[k][1] - lo < chute) continue;
+    for (let j = k; j >= 0 && w[k][0] - w[j][0] <= hi; j--) H = Math.max(H, w[j][1]);
+    if (w[k][1] >= H - tol) return { H, t0: w[k][0] };
+  }
+  return null;
+}
+
+// Stratégies : signal(ctx, params) → 'buy' | 'sell' | { side, limit, ttl (s) } (ordre limite) | undefined.
+// ctx = { h: [[ts, mid, imb, wallBid]], zones, mid, prev, last (fin du dernier trade / ordre) }
 const mids = (h, n) => h.slice(-n).map(x => x[1]);
 const mono = (a, dir, n) => a.length === n && a.every((x, i) => i === 0 || (x - a[i - 1]) * dir > 0);
 const BASE = { sl: 2, tp: 4, maxMin: 10, maxSpread: 0.8, pause: 30 };
@@ -74,31 +94,53 @@ const STRATS = {
       if (sd > 0 && c.mid < mu - p.k * sd) return 'buy';
     }
   },
+  // Approximation : pas de flux de transactions ici, « mangé » = le mur d'achat (tenu ≥ 2 s, à ≤ dist du prix)
+  // disparaît pendant que le prix passe dessous. Déclencheur des 5 dernières s (postérieur au dernier trade / ordre),
+  // cascade armée dans les 15 s avant lui → vente limite au plus haut H de la cascade, valable ttl s.
+  mange: {
+    nom: 'Acheteur mangé (vente)', p: { ...BASE, chute: 0.8, dist: 1, ttl: 120 }, g: { chute: [0.5, 0.8, 1.2], dist: [0.5, 1, 2] }, signal(c, p) {
+      const h = c.h, n = h.length, now = h[n - 1][0];
+      for (let e = n - 1; e > 0 && now - h[e][0] <= 5000 && h[e][0] > c.last; e--) {
+        const W = h[e - 1][3], same = x => x && Math.abs(x - W) <= 0.3;
+        if (!W || same(h[e][3]) || h[e][1] > W || h[e - 1][1] - W > p.dist) continue;
+        let i = e - 1;
+        while (i > 0 && same(h[i - 1][3])) i--;
+        if (h[e - 1][0] - h[i][0] < 2000) continue;
+        const a = cascade(h, h[e][0], { chute: p.chute, tol: 0.1 });
+        if (a && a.H > c.mid) return { side: 'sell', limit: a.H, ttl: p.ttl };
+      }
+    }
+  },
 };
 
 // Moteur : 1 position de 1 oz max par stratégie. Achat au ask, sortie au bid (le spread est payé).
 // params[k] = { on, ...STRATS[k].p } ; onTrade(trade fermé). tick(..., false) = historique sans trader.
-// ob = carnet au moment du tick : { imb (-1..1), wallBid, wallAsk (prix) }. S.h = [[ts, mid, imb], ...]
+// ob = carnet au moment du tick : { imb (-1..1), wallBid, wallAsk (prix) }. S.h = [[ts, mid, imb, wallBid], ...]
+// Ordre limite en attente (S.ord) : exécuté au prix limite dès que le bid (vente) / l'ask (achat) l'atteint, sinon expiré.
 // cache (Map, optionnel) : zones partagées entre plusieurs passes sur les mêmes ticks (elles ne dépendent que du prix).
 function engine(params, onTrade, cache) {
-  const S = { h: [], zones: [], zt: 0, pos: {}, last: {} };
+  const S = { h: [], zones: [], zt: 0, pos: {}, ord: {}, last: {} };
   return {
     S, tick(ts, bid, ask, trade = true, ob = {}) {
       const mid = (bid + ask) / 2, prev = S.h.length ? S.h[S.h.length - 1][1] : mid;
-      S.h.push([ts, mid, ob.imb]);
+      S.h.push([ts, mid, ob.imb, ob.wallBid]);
       if (S.h.length > 18000) S.h.splice(0, S.h.length - 14400); // ~4 h à 1 tick/s
       if (ts - S.zt >= 60000) { S.zones = cache?.get(ts) ?? zones(S.h, mid); cache?.set(ts, S.zones); S.zt = ts; }
       for (const z of S.zones) z.side = (z.lo + z.hi) / 2 < mid ? 'buy' : 'sell';
       if (!trade) return;
       for (const k in STRATS) {
-        const p = params[k], pos = S.pos[k];
+        const p = params[k], pos = S.pos[k], o = S.ord[k];
         if (pos) {
           const dir = pos.side === 'buy' ? 1 : -1, exit = dir > 0 ? bid : ask, pnl = (exit - pos.entry) * dir;
           const reason = pnl <= -p.sl ? 'stop' : pnl >= p.tp ? 'objectif' : ts - pos.entry_ts >= p.maxMin * 60000 ? 'temps' : null;
           if (reason) { delete S.pos[k]; S.last[k] = ts; onTrade({ ...pos, exit_ts: ts, exit, pnl, reason }); }
+        } else if (o) {
+          if (o.side === 'sell' ? bid >= o.limit : ask <= o.limit) { delete S.ord[k]; S.pos[k] = { strategy: k, side: o.side, entry_ts: ts, entry: o.limit }; }
+          else if (ts >= o.until) { delete S.ord[k]; S.last[k] = ts; }
         } else if (p.on && ask - bid <= p.maxSpread && ts - (S.last[k] || 0) >= p.pause * 1000) {
-          const side = STRATS[k].signal({ h: S.h, zones: S.zones, mid, prev, wallBid: ob.wallBid, wallAsk: ob.wallAsk }, p);
-          if (side) S.pos[k] = { strategy: k, side, entry_ts: ts, entry: side === 'buy' ? ask : bid };
+          const sig = STRATS[k].signal({ h: S.h, zones: S.zones, mid, prev, wallBid: ob.wallBid, wallAsk: ob.wallAsk, last: S.last[k] || 0 }, p);
+          if (sig?.limit) S.ord[k] = { side: sig.side, limit: sig.limit, placed: ts, until: ts + sig.ttl * 1000 };
+          else if (sig) S.pos[k] = { strategy: k, side: sig, entry_ts: ts, entry: sig === 'buy' ? ask : bid };
         }
       }
     }
@@ -218,4 +260,4 @@ function zoomable(cv, seg, get, set) {
   mark();
 }
 
-if (typeof module !== 'undefined') module.exports = { zones, engine, STRATS, backtest, optimise };
+if (typeof module !== 'undefined') module.exports = { zones, cascade, engine, STRATS, backtest, optimise };

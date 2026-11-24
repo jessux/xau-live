@@ -52,7 +52,7 @@ function draw() {
 async function price() {
   try {
     const j = await (await fetch('/api/price')).json(), m = (j.bid + j.ask) / 2;
-    $('px').textContent = m.toFixed(2); $('px').style.color = m > last ? 'var(--long)' : m < last ? 'var(--short)' : ''; last = m;
+    $('px').textContent = m.toFixed(2); document.title = `XAUUSD ${m.toFixed(2)} | XAUUSD Live`; $('px').style.color = m > last ? 'var(--long)' : m < last ? 'var(--short)' : ''; last = m;
     $('pxm').textContent = j.source + ' · Bid ' + j.bid.toFixed(2) + ' · Ask ' + j.ask.toFixed(2) + ' · ' + new Date(j.ts).toLocaleTimeString('fr-FR');
     hist.push([j.ts, m]);
     while (hist[0][0] < j.ts - H4) hist.shift();

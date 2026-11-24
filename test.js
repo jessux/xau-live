@@ -31,6 +31,64 @@ assert(!E2.S.pos.desequilibre);
 E2.tick(5000, 3699.9, 3700.1, true, { imb: 0.45 });
 assert.strictEqual(E2.S.pos.desequilibre.side, 'buy');
 
+// Acheteur mangé : mur d'achat 3699 tenu, sommet 3701 puis chute ≥ 0,8 $ en ≤ 5 s, le mur disparaît quand le prix passe dessous
+// → vente limite à 3701, exécutée au retour du prix, puis objectif. Mur retiré sans traversée du prix → rien.
+const p3 = Object.fromEntries(Object.entries(STRATS).map(([k, s]) => [k, { ...s.p, on: k === 'mange', pause: 0 }]));
+const t3 = [], E3 = engine(p3, t => t3.push(t));
+const run3 = (seq, wall) => seq.forEach(m => E3.tick(ts += 1000, m - .1, m + .1, true, { wallBid: wall }));
+ts = 0;
+run3([3700, 3700, 3700, 3700.5, 3701], 3699);
+run3([3700.6, 3700, 3699.5], 3699);
+assert(!E3.S.ord.mange);
+run3([3698.8], null);
+assert.strictEqual(E3.S.ord.mange.limit, 3701);
+run3([3699.5, 3701.2], null);
+assert(E3.S.pos.mange && E3.S.pos.mange.entry === 3701);
+run3([3699, 3696.8], null);
+assert.strictEqual(t3[0].reason, 'objectif');
+assert(Math.abs(t3[0].pnl - 4.1) < 1e-9);
+run3([3700, 3700, 3700.5, 3701, 3700, 3699.6], 3699);
+run3([3699.7], null);
+assert(!E3.S.ord.mange && !E3.S.pos.mange);
+
+// Binance : carnet local (instantané + diffs, trou de séquence → resync)
+const { bnBook, bnRule } = require('./binance.js');
+const BK = bnBook();
+assert.strictEqual(BK.diff({ U: 90, u: 95, pu: 89, b: [], a: [] }), false);
+assert.strictEqual(BK.snapshot({ lastUpdateId: 100, bids: [['10', '1']], asks: [['11', '1']] }), undefined);
+assert.strictEqual(BK.diff({ U: 98, u: 105, pu: 97, b: [['10', '0'], ['9', '2']], a: [] }), true);
+assert(!BK.bids.has(10) && BK.bids.get(9) === 2);
+assert.strictEqual(BK.diff({ U: 106, u: 110, pu: 105, b: [], a: [] }), true);
+assert.strictEqual(BK.diff({ U: 112, u: 115, pu: 111, b: [], a: [] }), 'resync');
+
+// Binance : gros bid (10 contre 1) à 99990.5 tenu 3 s, balayé par des ventes pendant une chute de 21 T depuis 100000
+// → vente limite à 99999 (multiple de 20 T dans [H − 5 ; H + 2], moins 1 T), exécutée, bilan à +5 min ; témoin sans retour.
+// Même scénario sans transactions = bid retiré : aucun ordre.
+function scen(sweep) {
+  const R = bnRule({ tick: 0.1 }, () => 0), bids = new Map(), B = { bids, asks: new Map([[100000.5, 1]]) };
+  for (let i = 0; i < 13; i++) bids.set(99999.5 - i, i === 9 ? 10 : 1);
+  let t = 1000;
+  const steps = to => { for (; t <= to; t += 100) R.step(B, t); };
+  R.trade({ t, p: 100000, q: .1, m: false }); steps(4000);
+  for (let i = 0; i < 10; i++) bids.delete(99999.5 - i);
+  if (sweep) for (let i = 0; i < 10; i++) R.trade({ t: 4050, p: 99999.5 - i, q: i === 9 ? 10 : 1, m: true });
+  steps(4400);
+  R.trade({ t: 4450, p: 99979, q: 1, m: true }); steps(20000);
+  R.trade({ t: 20050, p: 99999.5, q: 1, m: false });
+  R.trade({ t: 20060, p: 99989, q: 1, m: true }); steps(330000);
+  return R;
+}
+const R1 = scen(true), sig = R1.S.done.find(o => o.kind === 'signal'), tem = R1.S.done.find(o => o.kind === 'témoin');
+assert.strictEqual(R1.S.T, 1);
+assert.deepStrictEqual([R1.S.n.cascades, R1.S.n.manges, R1.S.n.ordres, R1.S.n.executions], [1, 1, 1, 1]);
+assert.strictEqual(sig.limit, 99999);
+assert.strictEqual(sig.statut, 'exécuté');
+assert(Math.abs(sig.pnl5 - 10 / 99999 * 1e4) < 1e-9);
+assert.strictEqual(tem.limit, 100009);
+assert.strictEqual(tem.statut, 'pas de retour');
+const R2 = scen(false);
+assert.deepStrictEqual([R2.S.n.retires, R2.S.n.manges, R2.S.done.length], [1, 0, 0]);
+
 // Optimiseur : 1 h de sinusoïde. Le cache de zones ne change pas les résultats ; un réglage proposé gagne sur les deux moitiés.
 const S = [];
 for (let i = 0; i < 3600; i++) { const m = 3700 + 3 * Math.sin(i / 90); S.push([i * 1000, m - .1, m + .1, null, null, null]); }

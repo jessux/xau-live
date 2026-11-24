@@ -41,7 +41,8 @@ td,th{padding:4px 6px;text-align:right;border-bottom:1px solid #8883;white-space
 <div class="book"><b>Carnet d'ordres live</b> <span class="mut">· or tokenisé PAXG/XAUT (1 = 1 oz), recalé sur le spot</span><div id="book" class="mut">Chargement…</div></div></div>
 <p class="mut">Paper trading sur le prix Swissquote live : 1 oz par trade, achat au ask, vente au bid (spread payé). ▲▼ entrées, ○ sorties (vert = gain).
 Le carnet agrège Binance, Kraken, Coinbase et Bitfinex : chaque niveau est placé selon son écart au mid de son carnet, appliqué au prix spot.
-Déséquilibre = (acheteurs − vendeurs) / total à ±3 $ ; mur = plus gros niveau à ±5 $ s'il dépasse 3× la moyenne.</p>
+Déséquilibre = (acheteurs − vendeurs) / total à ±3 $ ; mur = plus gros niveau à ±5 $ s'il dépasse 3× la moyenne.
+« Acheteur mangé » : cascade vendeuse depuis un plus haut puis disparition du mur d'achat → vente limite au plus haut (règle candidate, voir trading-carnet/strategie/SYNTHESE_SIGNAL.md).</p>
 <h2>Stratégies</h2><div class="grid" id="st"></div>
 <p><button id="replay">Rejouer tout l'historique avec ces paramètres</button> <button id="opt">Optimiser les paramètres</button> <span class="mut" id="rm"></span></p>
 <div class="wrap" id="optres"></div>
@@ -57,7 +58,7 @@ Déséquilibre = (acheteurs − vendeurs) / total à ±3 $ ; mur = plus gros niv
 const $ = id => document.getElementById(id), CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/';
 const LBL = { sl: 'Stop $', tp: 'Objectif $', maxMin: 'Durée max (min)', maxSpread: 'Spread max $', pause: 'Pause après trade (s)',
   dist: 'Distance $', ticks: 'Ticks consécutifs', marge: 'Marge cassure $', move: 'Mouvement min $', win: 'Fenêtre (ticks)', k: 'Écarts-types',
-  seuil: 'Seuil déséquilibre (0–1)' };
+  seuil: 'Seuil déséquilibre (0–1)', chute: 'Chute cascade $ (≤ 5 s)', ttl: 'Validité ordre limite (s)' };
 const Q = {
   'PnL par stratégie': `SELECT strategy, mode, COUNT(*) trades, ROUND(AVG(pnl > 0) * 100) "gain %", ROUND(SUM(pnl), 2) "pnl $", ROUND(AVG(pnl), 2) "moy $"
 FROM trades GROUP BY strategy, mode ORDER BY strategy, mode`,
@@ -160,7 +161,8 @@ function draw() {
 function render() {
   draw();
   for (const k in STRATS) {
-    const p = E.S.pos[k], el = $('st-' + k);
+    const p = E.S.pos[k], o = E.S.ord[k], el = $('st-' + k);
+    if (!p && o) { el.innerHTML = `${o.side === 'buy' ? 'Achat' : 'Vente'} limite @ ${o.limit.toFixed(2)} · expire ${new Date(o.until).toLocaleTimeString('fr-FR')}`; continue; }
     if (!p || !tick) { el.innerHTML = '<span class="mut">Pas de position</span>'; continue; }
     const u = ((p.side === 'buy' ? tick.bid : tick.ask) - p.entry) * (p.side === 'buy' ? 1 : -1);
     el.innerHTML = `${p.side === 'buy' ? 'Achat' : 'Vente'} @ ${p.entry.toFixed(2)} · <span class="${u >= 0 ? 'pos' : 'neg'}">${u.toFixed(2)} $</span>`;
@@ -211,7 +213,8 @@ let prev;
 async function poll() {
   try {
     const j = await (await fetch('/api/price')).json();
-    $('px').textContent = ((j.bid + j.ask) / 2).toFixed(2);
+    const mid = (j.bid + j.ask) / 2;
+    $('px').textContent = mid.toFixed(2); document.title = `XAUUSD ${mid.toFixed(2)} | XAUUSD Scalping`;
     $('pxm').textContent = `${j.source} · Bid ${j.bid.toFixed(2)} · Ask ${j.ask.toFixed(2)} · spread ${(j.ask - j.bid).toFixed(2)} · ${new Date(j.ts).toLocaleTimeString('fr-FR')}`;
     if (j.source !== 'Swissquote') return $('pxm').textContent += ' · source de secours sans spread : tick non enregistré';
     if (prev && prev.bid === j.bid && prev.ask === j.ask) return; // marché figé
