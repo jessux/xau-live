@@ -1,0 +1,58 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pullback H4/H1 · papier</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1b1f24;--mut:#6b7380;--long:#1f9d55;--short:#d64545;--card:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#121417;--fg:#e8eaed;--mut:#9aa1ab;--card:#1c1f24;color-scheme:dark}}
+body{margin:0 auto;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;padding:16px;max-width:1000px}
+h1{font-size:20px;margin:0;display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}h2{font-size:15px;margin:20px 0 6px}.mut{color:var(--mut)}
+a{color:inherit}.px{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-top:8px}.c{background:var(--card);padding:10px;border-radius:8px}
+.wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13px}
+td,th{padding:4px 6px;text-align:right;border-bottom:1px solid #8883;white-space:nowrap}th:first-child,td:first-child{text-align:left}
+.pos{color:var(--long)}.neg{color:var(--short)}
+</style>
+<script src="pullback.js"></script></head><body>
+<h1>Pullback H4/H1 · papier <a href="/">← Zones</a></h1>
+<p class="mut">Seule variante restée gagnante hors échantillon sur 6 ans de PAXG (<code>node pullback.js</code>) : biais H4 = EMA 50 montante / descendante,
+entrée quand une bougie H1 touche l'EMA 50 et clôture du bon côté, stop sous / sur les 5 dernières bougies ± 1 $, objectif 3R, 24 h/24.
+Bougies 1 h PAXG/USDT (Binance, hors week-end), écart de 0,35 $ simulé. Le journal est recalculé à chaque ouverture depuis l'historique :
+rien n'est stocké, rien n'est perdu en fermant l'onglet. Sans argent, pas un conseil en investissement.</p>
+<p class="mut" id="st" role="status">Chargement…</p>
+<div class="grid" id="etat"></div>
+<h2>Bilan papier <span class="mut" id="depuis"></span></h2><div class="wrap"><table id="bil"></table></div>
+<h2>Trades</h2><div class="wrap"><table id="tr"></table></div>
+<script>
+// ponytail: départ du papier figé ; trades entrés avant = backtest, pas du live.
+const START = Date.UTC(2026, 10, 26), LIVE = { ...P, rr: 3, heures: [0, 24] };
+const $ = id => document.getElementById(id), f = (v, d = 2) => v == null ? '–' : (+v).toFixed(d);
+const dt = t => new Date(t).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const sens = s => s > 0 ? '<span class="pos">Achat</span>' : '<span class="neg">Vente</span>', cls = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+const tab = (head, rows) => `<tr>${head.map(h => `<th>${h}</th>`).join('')}</tr>` + rows.map(r => `<tr>${r.map(x => `<td>${x}</td>`).join('')}</tr>`).join('');
+$('depuis').textContent = `(trades entrés depuis le ${new Date(START).toLocaleDateString('fr-FR')}, risque 0,5 % par trade)`;
+async function maj() {
+  try {
+    const [bid, tk] = await Promise.all([paxgBars(START - 120 * 864e5),
+      fetch('https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT').then(r => r.json())]);
+    const tr = run(bid, spreadAsk(bid), LIVE), { pos, sig, bias, ema } = tr.etat, px = +tk.price, last = bid[bid.length - 1];
+    const live = tr.filter(t => t.t >= START), latent = pos && ((pos.side > 0 ? px : px + P.spread) - pos.entry) * pos.side / pos.risk;
+    $('etat').innerHTML = [
+      `<div class="mut">PAXG maintenant</div><div class="px">${f(px)}</div>`,
+      `<div class="mut">Biais H4 (EMA 50)</div><div class="px ${cls(bias)}">${bias > 0 ? 'Achats seuls' : bias < 0 ? 'Ventes seules' : 'Aucun'}</div>`,
+      `<div class="mut">EMA 50 H1</div><div class="px">${f(ema)}</div><div class="mut">écart ${f(px - ema)} $</div>`,
+      pos ? `<div class="mut">Position ouverte · ${dt(pos.t)}</div><div class="px">${sens(pos.side)} ${f(pos.entry)}</div>
+        <div>stop ${f(pos.stop)} · objectif ${f(pos.target)} · <b class="${cls(latent)}">${f(latent)} R</b></div>`
+      : sig ? `<div class="mut">Signal · entrée à l'ouverture de ${dt(last.t + 3600e3)}</div><div class="px">${sens(sig.side)}</div><div>stop ${f(sig.stop)}</div>`
+      : `<div class="mut">Position</div><div class="px">Aucune</div><div class="mut">attente d'un repli sur l'EMA 50 H1</div>`,
+    ].map(c => `<div class="c">${c}</div>`).join('');
+    const s = stats(live), b = stats(tr.filter(t => t.t < START));
+    $('bil').innerHTML = tab(['', 'Trades', 'Gagnants %', 'PF', 'R moyen', 'R total', 'Drawdown R', 'Capital %'],
+      [['Papier (live)', s], ['Backtest 120 j avant', b]].map(([n, x]) =>
+        [n, x.trades, x.gagnants, x.pf ?? '–', x.R_moyen, `<b class="${cls(x.R_total)}">${x.R_total}</b>`, x.dd_R, x.capital]));
+    $('tr').innerHTML = tab(['Entrée', 'Sens', 'Prix', 'Stop', 'Objectif', 'Sortie', 'Prix sortie', 'R', ''],
+      [...tr].reverse().slice(0, 40).map(t => [dt(t.t), sens(t.side), f(t.entry), f(t.stop), f(t.target), dt(t.exit_t), f(t.exit),
+        `<b class="${cls(t.r)}">${f(t.r)}</b>`, t.t >= START ? 'papier' : '<span class="mut">backtest</span>']));
+    $('st').textContent = `Dernière bougie close : ${dt(last.t)} → ${dt(last.t + 3600e3)} · mis à jour ${new Date().toLocaleTimeString('fr-FR')}`;
+  } catch (e) { $('st').textContent = 'Binance indisponible : ' + e.message; }
+}
+maj(); setInterval(maj, 60e3);
+</script></body></html>

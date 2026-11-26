@@ -133,6 +133,10 @@ assert(near(pbRun(pull)[0].r, -1) && near(pbRun(pull, { be: true })[0].r, 0) && 
 assert(near(pbRun([2, 2, 2, 2, 2, 2, 2], { partiel: .5 })[0].r, 1.5));
 assert.strictEqual(pbRun([2, 2, 2, 2, 2, 2, 2], { sauf: [17, 18] }).length, 0);
 assert.strictEqual(pbRun([2, 2, 2, 2, 2, 2, 2], { sauf: [16, 17] }).length, 1);
+// État live : signal sur la dernière bougie close → sig ; une bougie de plus → position ouverte. Biais H4 haussier.
+const e0 = pbRun([]).etat, e1 = pbRun([2]).etat;
+assert(e0.sig && e0.sig.side === 1 && !e0.pos && e0.bias === 1);
+assert(e1.pos && near(e1.pos.entry, 2041.2) && !e1.sig);
 assert.strictEqual(pb.stats([{ r: 2 }, { r: -1 }, { r: -1 }, { r: 2 }]).pf, 2);
 console.log('ok pullback');
 

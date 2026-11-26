@@ -10,6 +10,9 @@ Prix de l'or en direct (Swissquote, 1 s, secours gold-api.com), uniquement des d
   Tourne tant que l'onglet est ouvert. Le journal et les ordres terminés sont sauvegardés par symbole dans le navigateur et affichés dès l'ouverture, sans connexion à Binance ;
   les ordres en cours ne sont pas repris après fermeture.
 
+- **`/pullback.html`** : variante « trend pullback H4/H1 » (EMA 50, objectif 3R, 24 h/24) en papier sur bougies 1 h PAXG/USDT (Binance).
+  Journal recalculé depuis l'historique à chaque ouverture (départ du papier : 26/11/2026), position ouverte et signal en attente affichés.
+
 ## Tester en local
 
 Prérequis : **Node.js 18+** (aucun `npm install` nécessaire).
@@ -49,6 +52,7 @@ vercel.com → New Project → importer `jessux/xau-live` → Deploy.
 index.html         zones d'achat / de vente
 scalp.html         paper trading + SQLite
 binance.html       règle « acheteur mangé » en papier sur Binance Futures
+pullback.html      pullback H4/H1 objectif 3R en papier (PAXG 1 h)
 xau.js             zones, stratégies, moteur, graphique (partagé)
 binance.js         carnet local Binance + règle « acheteur mangé » (sans I/O)
 api/price.js       prix Swissquote (+ secours gold-api.com)
