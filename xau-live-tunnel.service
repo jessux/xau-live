@@ -1,0 +1,15 @@
+[Unit]
+Description=Tunnel trycloudflare XAUUSD Live
+After=network-online.target xau-live.service
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+ExecStart=/usr/local/bin/cloudflared tunnel --config /dev/null --no-autoupdate --url http://127.0.0.1:3000
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

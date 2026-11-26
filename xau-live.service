@@ -1,0 +1,16 @@
+[Unit]
+Description=XAUUSD Live (node dev.js en conteneur, 127.0.0.1:3000, lecture seule)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+ExecStartPre=-/usr/bin/docker rm -f xau-live
+ExecStart=/usr/bin/docker run --rm --name xau-live -p 127.0.0.1:3000:3000 -v /opt/xau-live:/app:ro -w /app \
+  --user node --read-only --cap-drop ALL --security-opt no-new-privileges --memory 128m --cpus 0.25 node:22-alpine node dev.js
+ExecStop=/usr/bin/docker stop xau-live
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
