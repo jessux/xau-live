@@ -42,6 +42,16 @@ Si le proxy demande un identifiant : `http://user:motdepasse@proxy:8080`.
 
 Sur `/scalp.html`, « Prix indisponible » signifie qu'aucune cotation valide n'a été reçue ; aucun tick n'est enregistré dans ce cas.
 
+## VPS
+
+`node dev.js` dans un conteneur `node:22-alpine` (service `xau-live`, 127.0.0.1:3000) + tunnel trycloudflare (`xau-live-tunnel`).
+Mise à jour depuis le poste (branche courante) :
+
+```bash
+git archive HEAD | ssh root@178.105.133.51 "rm -rf /opt/xau-live && mkdir /opt/xau-live && tar -x -C /opt/xau-live && install -m 644 /opt/xau-live/*.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now xau-live xau-live-tunnel && systemctl restart xau-live"
+ssh root@178.105.133.51 "journalctl -u xau-live-tunnel | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1"
+```
+
 ## Déployer sur Vercel
 
 vercel.com → New Project → importer `jessux/xau-live` → Deploy.
