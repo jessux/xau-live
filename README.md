@@ -53,6 +53,9 @@ xau.js             zones, stratégies, moteur, graphique (partagé)
 binance.js         carnet local Binance + règle « acheteur mangé » (sans I/O)
 api/price.js       prix Swissquote (+ secours gold-api.com)
 api/book.js        carnet d'ordres live or tokenisé (Binance, Kraken, Coinbase, Bitfinex)
+pullback.js        backtest « trend pullback H4/H1 » sur bougies H1 + validation réglage / contrôle :
+                   node pullback.js paxg (télécharge data/paxg-h1.csv) puis node pullback.js data/paxg-h1.csv
+                   (ou CSV Dukascopy : node pullback.js bid.csv ask.csv)
 dev.js             serveur local
 test.js            node test.js : vérifie zones, moteur, carnet Binance et règle
 ```

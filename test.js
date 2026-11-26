@@ -108,6 +108,34 @@ for (const k in STRATS) {
 }
 console.log('ok', trades.length, 'trades');
 
+// Pullback H4/H1 (EMA 5) : hausse régulière sans toucher l'EMA, une mèche jusqu'à l'EMA → achat à l'ouverture suivante (ask),
+// stop = plus bas mid des 2 dernières bougies − 1 $, puis hausse → objectif 2R. Même mèche suivie d'une chute → stop, −1 R.
+const pb = require('./pullback.js');
+const pbRun = (tail, o = {}) => {
+  const bid = [];
+  let c = 2000;
+  const bar = (dc, wick = 0.2) => { const o = c; c += dc; bid.push({ t: bid.length * 3600e3, o, h: c + .2, l: Math.min(o, c) - wick, c }); };
+  for (let i = 0; i < 40; i++) bar(1);
+  bar(1, 3);
+  tail.forEach(d => bar(d));
+  return pb.run(bid, bid.map(b => ({ t: b.t, o: b.o + .2, h: b.h + .2, l: b.l + .2, c: b.c + .2 })), { ...pb.P, ema: 5, swing: 2, heures: [0, 24], ...o });
+};
+const near = (a, b) => Math.abs(a - b) < 1e-9;
+const up = pbRun([2, 2, 2, 2, 2, 2, 2]);
+assert.strictEqual(up.length, 1);
+assert(up[0].side === 1 && near(up[0].entry, 2041.2) && near(up[0].stop, 2036.1) && near(up[0].r, 2));
+const down = pbRun([0, -20]);
+assert(down.length === 1 && near(down[0].r, -1));
+// +1R puis chute : break-even → 0 R ; moitié fermée à +1R → 0,5 R ; moitié à +1R puis objectif → 1,5 R.
+// Signal sur la bougie 40 h → 41 h (clôture 17 h UTC) : exclu par sauf [17, 18].
+const pull = [2, 2, 2, -20];
+assert(near(pbRun(pull)[0].r, -1) && near(pbRun(pull, { be: true })[0].r, 0) && near(pbRun(pull, { partiel: .5 })[0].r, .5));
+assert(near(pbRun([2, 2, 2, 2, 2, 2, 2], { partiel: .5 })[0].r, 1.5));
+assert.strictEqual(pbRun([2, 2, 2, 2, 2, 2, 2], { sauf: [17, 18] }).length, 0);
+assert.strictEqual(pbRun([2, 2, 2, 2, 2, 2, 2], { sauf: [16, 17] }).length, 1);
+assert.strictEqual(pb.stats([{ r: 2 }, { r: -1 }, { r: -1 }, { r: 2 }]).pf, 2);
+console.log('ok pullback');
+
 // Une erreur de cotation n'affiche pas NaN et n'entre pas dans l'historique Scalp.
 (async () => {
   const { readFileSync } = require('fs'), { runInNewContext } = require('vm');
